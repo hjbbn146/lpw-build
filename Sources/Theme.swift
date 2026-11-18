@@ -124,15 +124,16 @@ enum Ctl {
     }
 
     /// 一行：左图标 + 标题 + 右侧值
-    static func row(icon: String?, title: String, valueView: UIView? = nil,
+    static func row(icon iconName: String?, title: String, valueView: UIView? = nil,
                     titleSize: CGFloat = 15, muted: Bool = false) -> UIView {
         let h = UIStackView()
         h.axis = .horizontal
         h.alignment = .center
         h.spacing = 12
         h.translatesAutoresizingMaskIntoConstraints = false
-        if let n = icon {
-            h.addArrangedSubview(icon(n, size: 17))
+        if let n = iconName {
+            // 必须限定 Ctl.，否则会被同名参数 iconName/icon 遮蔽
+            h.addArrangedSubview(Ctl.icon(n, size: 17))
         }
         let t = label(title, size: titleSize, weight: muted ? .regular : .regular,
                       color: Theme.text)

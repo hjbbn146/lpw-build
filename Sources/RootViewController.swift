@@ -245,7 +245,7 @@ final class RootViewController: UIViewController {
         pickRow.translatesAutoresizingMaskIntoConstraints = false
         pickRow.heightAnchor.constraint(equalToConstant: 48).isActive = true
 
-        let icon = Ctl.icon("photo.on.rectangle.angled", size: 18)
+        let icon = Ctl.icon("photo.on.rectangle", size: 18)
         let title = Ctl.label("从相册选择视频", size: 16, color: Theme.accent)
         let chev = Ctl.icon("chevron.right", color: Theme.faint, size: 12, weight: .semibold)
 
