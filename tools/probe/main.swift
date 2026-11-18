@@ -455,6 +455,48 @@ if let alt = altFmt, passTestOK {
     print("THREE-TEST 跳过（拿不到可用的元数据格式）")
 }
 
+// ---- D. 内置真机样本的真实 mebx 格式描述 → 两轨直通（v2.6 主路径验证）
+print("")
+print("=== 内置样本元数据格式 → 直通验证 ===")
+var bundledOK = false
+let sampleURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    .appendingPathComponent("Resources/sample_live.mov")
+var bundledFmt: CMFormatDescription?
+if FileManager.default.fileExists(atPath: sampleURL.path) {
+    let sa = AVURLAsset(url: sampleURL)
+    for t in sa.tracks(withMediaType: .metadata) {
+        if let f = t.formatDescriptions.first {
+            bundledFmt = (f as! CMFormatDescription)
+            let ext = CMFormatDescriptionGetExtensions(bundledFmt!) as? [String: Any] ?? [:]
+            print("BUNDLED fmt 取到 extensions=\(ext)")
+            break
+        }
+    }
+} else {
+    print("BUNDLED 样本文件不存在: \(sampleURL.path)")
+}
+
+if let bf = bundledFmt {
+    let bout = cDir.appendingPathComponent("bundled_out.mov")
+    do {
+        let r = try Passthrough.convert(source: rawVideo, outputURL: bout, maxSeconds: 3.0,
+                                        keepAudio: false, metaFormat: bf,
+                                        identifier: "BUNDLED-TEST", progress: { _ in })
+        let oa = AVURLAsset(url: bout)
+        let mt = oa.tracks(withMediaType: .metadata).count
+        let data = (try? Data(contentsOf: bout)) ?? Data()
+        let sit = data.range(of: Data("still-image-time".utf8)) != nil
+        let uuid = data.range(of: Data("BUNDLED-TEST".utf8)) != nil
+        print("BUNDLED convert OK frames=\(r.frames) metadata轨=\(mt) sit=\(sit) uuid=\(uuid)")
+        bundledOK = r.frames > 0 && mt > 0 && sit
+    } catch {
+        print("BUNDLED convert FAIL: \(error.localizedDescription)")
+    }
+} else {
+    print("BUNDLED 跳过（取不到格式描述）")
+}
+print(bundledOK ? "BUNDLED PASS" : "BUNDLED 未通过")
+
 print(passTestOK ? "PASS-TEST PASS" : "PASS-TEST FAIL")
 print(threeOK ? "THREE-TEST PASS" : "THREE-TEST 未通过或跳过")
 exit(passTestOK ? 0 : 9)

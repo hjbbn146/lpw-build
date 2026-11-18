@@ -229,7 +229,7 @@ enum Passthrough {
         }
         result.frames = frameCount
         result.audioSamples = 0
-        Diag.log("直通完成 · 视频 \(frameCount) 帧 · 音频 \(audioCount) 个样本 · " + Mem.summary())
+        Diag.log("直通完成 · 视频 \(frameCount) 帧 · 无音轨 · " + Mem.summary())
 
         // ---- 最后补 still-image-time
         //
