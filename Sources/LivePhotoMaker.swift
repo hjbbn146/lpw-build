@@ -69,6 +69,10 @@ enum LivePhotoMaker {
         let videoURL = dir.appendingPathComponent("live_\(stamp).mov")
         let photoBase = "live_\(stamp)"
         let identifier = UUID().uuidString
+        // 照片 EXIF 时间与视频 creationdate 必须来自同一个时刻：
+        // 直通 + 取帧可能要跑几十秒，分两次取时间会差出好几分钟，
+        // iOS 侧配对实况照片时会因为「前后差了这么久」而不认。
+        let stampDate = Date()
 
         // v3.0：不再从相册里找 still-image-time 的格式描述。
         // 那条路在 iOS 26/27 上走不通（-12710 + append 抛 ObjC 异常），
@@ -90,6 +94,7 @@ enum LivePhotoMaker {
                                           metaFormat: nil,
                                           identifier: identifier,
                                           sampleURL: sampleURL,
+                                          date: stampDate,
                                           progress: progress)
         } catch {
             guard keepAudio else { throw error }
@@ -104,6 +109,7 @@ enum LivePhotoMaker {
                                           metaFormat: nil,
                                           identifier: identifier,
                                           sampleURL: sampleURL,
+                                          date: stampDate,
                                           progress: progress)
         }
 
@@ -150,7 +156,7 @@ enum LivePhotoMaker {
                                             to: dir,
                                             baseName: photoBase,
                                             identifier: identifier,
-                                            dateString: exifDateString())
+                                            dateString: exifDateString(stampDate))
 
         let info = MediaInspector.inspect(source) ?? VideoInfo()
         Diag.log("生成完成：\(info.width)×\(info.height) \(info.codec) \(res.frames) 帧，标识 \(identifier)")
@@ -165,10 +171,10 @@ enum LivePhotoMaker {
 
     // MARK: - 时间格式
 
-    static func exifDateString() -> String {
+    static func exifDateString(_ date: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        return f.string(from: Date())
+        return f.string(from: date)
     }
 }

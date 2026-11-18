@@ -85,7 +85,11 @@ final class RootViewController: UIViewController {
     private func buildLayout() {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.showsVerticalScrollIndicator = false
-        scroll.alwaysBounceVertical = true
+        // 版面固定：内容不满一屏时不许上下拖动、不许橡皮筋回弹，
+        // 否则整页会像网页一样被拽来拽去（内容超一屏时仍可正常滚动）
+        scroll.alwaysBounceVertical = false
+        scroll.bounces = false
+        scroll.contentInsetAdjustmentBehavior = .never
         view.addSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),

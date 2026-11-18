@@ -42,6 +42,7 @@ enum Passthrough {
                         metaFormat: CMFormatDescription?,   // v3.0 忽略：元数据轨改走 box 移植
                         identifier: String,
                         sampleURL: URL? = nil,
+                        date: Date = Date(),
                         progress: @escaping (String) -> Void) throws -> Result {
 
         _ = keepAudio
@@ -110,6 +111,17 @@ enum Passthrough {
 
         let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: fmt)
         vIn.expectsMediaDataInRealTime = false
+        // 关键：把源视频的旋转矩阵写进 tkhd。
+        // 不设这一行，AVAssetWriter 会写成单位矩阵 —— 手机竖屏拍的视频
+        // 编码尺寸是 1920×1080 + 90° 旋转，矩阵一丢就变横屏，
+        // 生成的实况壁纸竖屏变横屏，壁纸引擎也会因为宽高比对不上而判成不可用。
+        vIn.transform = vTrack.preferredTransform
+        let tf = vTrack.preferredTransform
+        let disp = vTrack.naturalSize.applying(tf)
+        Diag.log(String(format: "源视频 transform=[%.2f %.2f %.2f %.2f %.1f %.1f] 编码 %.0f×%.0f 显示 %.0f×%.0f",
+                        Double(tf.a), Double(tf.b), Double(tf.c), Double(tf.d), Double(tf.tx), Double(tf.ty),
+                        Double(vTrack.naturalSize.width), Double(vTrack.naturalSize.height),
+                        Double(abs(disp.width)), Double(abs(disp.height))))
         guard writer.canAdd(vIn) else {
             throw MakeError.msg("写入器不接受该视频格式（编码或色彩空间不支持直通）")
         }
@@ -138,7 +150,7 @@ enum Passthrough {
         let dateItem = AVMutableMetadataItem()
         dateItem.keySpace = .quickTimeMetadata
         dateItem.key = "com.apple.quicktime.creationdate" as NSString
-        dateItem.value = isoNow() as NSString
+        dateItem.value = isoNow(date) as NSString
 
         writer.metadata = [idItem, dateItem]
 
@@ -288,11 +300,11 @@ enum Passthrough {
         s.isFinite ? String(format: "%.2f", s) : "—"
     }
 
-    static func isoNow() -> String {
+    static func isoNow(_ date: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
-        return f.string(from: Date())
+        return f.string(from: date)
     }
 
     static func fileBytes(_ url: URL) -> Double {
