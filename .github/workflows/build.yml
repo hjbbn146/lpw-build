@@ -30,7 +30,10 @@ jobs:
         continue-on-error: true
         run: |
           set +e
+          SDK=$(xcrun --sdk macosx --show-sdk-path)
+          clang -O -c Sources/MetadataGuard.m -o probe_guard.o 2>/dev/null || true
           swiftc -O -o probe_macos \
+            probe_guard.o \
             Sources/Errors.swift \
             Sources/Diag.swift \
             Sources/Memory.swift \

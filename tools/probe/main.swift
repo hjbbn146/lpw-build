@@ -512,6 +512,32 @@ if let bf = bundledFmt {
 }
 print(bundledOK ? "BUNDLED PASS" : "BUNDLED 未通过")
 
+
+// ---- E. 从样本 still-image-time 轨读出真实的 AVMetadataItem 参数
+print("")
+print("=== 样本 still-image-time 真实 item 参数 ===")
+if FileManager.default.fileExists(atPath: sampleURL.path) {
+    let sa = AVURLAsset(url: sampleURL)
+    for t in sa.tracks(withMediaType: .metadata) {
+        let r = try? AVAssetReader(asset: sa)
+        let out = AVAssetReaderTrackOutput(track: t, outputSettings: nil)
+        guard let rr = r, rr.canAdd(out) else { continue }
+        rr.add(out)
+        guard rr.startReading() else { continue }
+        if let sb = out.copyNextSampleBuffer(),
+           let groups = try? sb.metadataGroups(),
+           let g = groups.first {
+            for it in g.items {
+                print("ITEM key=\(it.key ?? "nil") keySpace=\(it.keySpace?.rawValue ?? "nil") dataType=\(it.dataType ?? "nil") value=\(String(describing: it.value))")
+                if let gf = try? g.copyFormatDescription() {
+                    print("  group.formatDesc extensions=\(String(describing: CMFormatDescriptionGetExtensions(gf)))")
+                }
+            }
+            break
+        }
+    }
+}
+
 print(passTestOK ? "PASS-TEST PASS" : "PASS-TEST FAIL")
 print(threeOK ? "THREE-TEST PASS" : "THREE-TEST 未通过或跳过")
 exit(passTestOK ? 0 : 9)
