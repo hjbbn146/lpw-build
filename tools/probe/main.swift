@@ -511,9 +511,11 @@ do {
     print("PORTER convert OK frames=\(r.frames) video轨=\(vt) metadata轨=\(mt)")
     print("PORTER mebx=\(mebx) sit=\(sit) lpi=\(lpi) ori=\(ori) uuid=\(uuid)")
     print("PORTER 移植轨: " + r.metaTracks.joined(separator: "+"))
-    // AVURLAsset 未必把 mebx 轨算进 .metadata，所以以二进制里的 key 字符串为准
-    bundledOK = r.frames > 0 && sit && lpi && ori && uuid
-    print("PORTER 轨道识别: mt>=3? \(mt >= 3)（仅供参考，mebx 不计入时会是 0）")
+    // AVURLAsset 未必把 mebx 轨算进 .metadata，所以以二进制里的 key 字符串为准。
+    // v4.1 起 video-orientation 必须**不存在**（真机就没有，有它=双重旋转）：
+    // 所以这里断言的正是 !ori。
+    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid
+    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid)")
 } catch {
     print("PORTER convert FAIL: \(error.localizedDescription)")
 }

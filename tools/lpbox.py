@@ -1,11 +1,14 @@
 """无损实况 · MOV box 级元数据轨移植（原型验证用）
 
-把「真机原生实况 MOV」里的 3 条元数据轨（live-photo-info / still-image-time /
-video-orientation）整条搬到「App 直通产出的 MOV」里，其余字节一个不动。
+把「真机原生实况 MOV」里的 2 条元数据轨（live-photo-info / still-image-time）
+整条搬到「App 直通产出的 MOV」里，其余字节一个不动。
+
+不移植 video-orientation：真机自己拍的实况（iPhone15,4 / iOS 27.2 实测）没有这条轨，
+而它的值是 int16=6（再转 90°），与 tkhd 的 90° 旋转矩阵叠加等于转两次 —— 竖屏变横屏。
 
 移植后目标文件的轨结构应当与真机样本完全一致：
     trak1 vide(hvc1) + trak2 meta(live-photo-info)
-    + trak3 meta(still-image-time) + trak4 meta(video-orientation) + moov/meta
+    + trak3 meta(still-image-time) + moov/meta
 """
 import sys, struct, os
 
@@ -116,7 +119,7 @@ def chunk_map(d, trak):
 
 # ---------------------------------------------------------------- 主流程
 
-META_KEYS = ('live-photo-info', 'still-image-time', 'video-orientation')
+META_KEYS = ('live-photo-info', 'still-image-time')
 
 def keytag(d, trak):
     """从 stsd 的 mebx 里读 key 名，用于识别这条元数据轨是什么"""
@@ -174,7 +177,7 @@ def transcode(video_mov, sample_mov, out_mov, verbose=True):
         donor.append((k, tk))
     if verbose:
         print('donor 轨：', [(k, tk[2]) for k, tk in donor])
-    order = ['live-photo-info', 'still-image-time', 'video-orientation']
+    order = ['live-photo-info', 'still-image-time']
     donor.sort(key=lambda kv: order.index(kv[0]) if kv[0] in order else 99)
 
     # ---- 视频侧 moov
@@ -221,7 +224,7 @@ def transcode(video_mov, sample_mov, out_mov, verbose=True):
         base = tk[1]
         # 1) tkhd track_ID
         pos = tkhd_trackid_pos(S, tk) - base
-        tid_new = (2 if k == 'live-photo-info' else 3 if k == 'still-image-time' else 4)
+        tid_new = (2 if k == 'live-photo-info' else 3)
         t[pos:pos+4] = struct.pack('>I', tid_new)
         # 2) stco / co64 换新偏移
         stbl = path(S, tk, ['mdia', 'minf', 'stbl'])
