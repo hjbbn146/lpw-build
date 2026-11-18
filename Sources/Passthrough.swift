@@ -71,11 +71,11 @@ enum Passthrough {
             throw MakeError.msg(String(format: "视频太短（%.2f 秒）", total.isFinite ? total : 0))
         }
         var use = (maxSeconds > 0.2 && total > maxSeconds) ? maxSeconds : total
-        // 保险丝：实况照片在 iOS 上只会播 3 秒左右，直通超长视频既没意义，
-        // 又容易把内存和磁盘一起撑爆
-        if use > 15.0 {
-            Diag.log(String(format: "时长 %.2fs 超过 15 秒，自动只取前 15 秒", use))
-            use = 15.0
+        // 硬性保险丝：iOS 实况照片的时长上限就是 3 秒，超过一律不被接受。
+        // 无论调用方传什么（早先 UI 里有个「保留全长」选项会传 0），这里都必须夹到 2.95 以内。
+        if use > 2.95 {
+            Diag.log(String(format: "时长 %.2fs 超过实况上限，自动截到 2.9s", use))
+            use = 2.9
         }
         result.usedSeconds = use
         result.sourceSeconds = total

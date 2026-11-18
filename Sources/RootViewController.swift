@@ -27,7 +27,9 @@ final class RootViewController: UIViewController {
 
     private var infoValues: [UILabel] = []
 
-    private let seg = UISegmentedControl(items: ["3 秒", "5 秒", "保留全长"])
+    // iOS 实况照片的硬上限是 3 秒，超过 3 秒一律不被壁纸引擎接受。
+    // 所以这里只给合法时长，不提供「保留全长」——那条路只会产出设不了壁纸的文件。
+    private let seg = UISegmentedControl(items: ["3 秒", "2 秒", "1 秒"])
     private let audioSwitch = UISwitch()
 
     private let genButton = Ctl.filledButton("生成实况壁纸", height: 50)
@@ -38,6 +40,8 @@ final class RootViewController: UIViewController {
     private let resultLabel = Ctl.label("尚未生成", size: 13.5, color: Theme.sub)
     private let openPhotosButton = Ctl.tintedButton("打开相册")
     private let selfTestButton = Ctl.tintedButton("环境自检")
+    /// 修复：把相册里已有的实况读回来，重新生成一份结构正确的
+    private let repairButton = Ctl.tintedButton("修复相册里最近一张实况", height: 44)
 
     private let logLabel = Ctl.label("", size: 10.5, color: Theme.faint, lines: 10)
     private var logLines: [String] = []
@@ -164,7 +168,9 @@ final class RootViewController: UIViewController {
 
         // ---- 主按钮
         content.addArrangedSubview(genButton)
-        content.setCustomSpacing(12, after: genButton)
+        content.setCustomSpacing(10, after: genButton)
+        content.addArrangedSubview(repairButton)
+        content.setCustomSpacing(12, after: repairButton)
 
         // ---- 状态行
         let statusRow = UIStackView()
@@ -325,6 +331,7 @@ final class RootViewController: UIViewController {
         genButton.addTarget(self, action: #selector(onGenerate), for: .touchUpInside)
         openPhotosButton.addTarget(self, action: #selector(onOpenPhotos), for: .touchUpInside)
         selfTestButton.addTarget(self, action: #selector(onSelfTest), for: .touchUpInside)
+        repairButton.addTarget(self, action: #selector(onRepair), for: .touchUpInside)
     }
 
     @objc private func onPick() {
@@ -378,8 +385,8 @@ final class RootViewController: UIViewController {
         // 比系统认可的上限多出一点点。这里留一帧余量，保证严格小于标称值。
         let maxSeconds: Double
         switch seg.selectedSegmentIndex {
-        case 1: maxSeconds = 4.9
-        case 2: maxSeconds = 0
+        case 1: maxSeconds = 1.9
+        case 2: maxSeconds = 0.9
         default: maxSeconds = 2.9
         }
         let audio = audioSwitch.isOn
@@ -459,6 +466,77 @@ final class RootViewController: UIViewController {
                 ? Theme.ok : Theme.warn
         })
         beginBG()
+    }
+
+    /// 修复相册里最近一张实况：读回它的配对视频，重新直通 + 截断 + 重移植 + 重写静帧。
+    ///
+    /// 为什么不做「原地补 box」：旧产物可能缺轨、可能超长（>3 秒）、静帧还可能是
+    /// ImageIO 写的 JPG（MakerNote 被丢）。重新走一遍直通能一次性全修好，
+    /// 而且直通不重编码，画质不损失。
+    @objc private func onRepair() {
+        guard !busy else { return }
+        resultLabel.text = "正在查找相册里最近一张实况…"
+        resultLabel.textColor = Theme.sub
+        statusLabel.textColor = Theme.sub
+        setBusy(true, "准备修复…")
+        beginBG()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            do {
+                guard LiveRepair.requestReadPermission() else {
+                    throw MakeError.msg("修复需要「完全访问」相册，因为要把旧实况的配对视频读回来。\n"
+                                        + "设置 → 隐私与安全性 → 照片 → 无损实况 → 完全访问")
+                }
+                guard let asset = LiveRepair.latestLiveAsset() else {
+                    throw MakeError.msg("相册里没找到实况照片。\n先用上面「生成实况壁纸」做一张，再用这个按钮修。")
+                }
+                let diag = LiveRepair.diagnose(asset)
+                Diag.log("修复目标：" + diag)
+                DispatchQueue.main.async { self.statusLabel.text = "旧的：" + diag }
+
+                let made = try LiveRepair.repair(asset, maxSeconds: 2.9) { s in
+                    DispatchQueue.main.async { self.statusLabel.text = s }
+                }
+                self.keepCopy(made)
+
+                DispatchQueue.main.async { self.statusLabel.text = "写入相册…" }
+                let lid = try PhotoSaver.savePair(photo: made.photoURL, video: made.videoURL)
+                _ = PhotoSaver.waitPhotoLive(localIdentifier: lid)
+
+                let chk = LiveCheck.verify(
+                    videoURL: made.videoURL,
+                    stillSize: CGSize(width: made.info.width, height: made.info.height))
+                Diag.log("修复产物自检：" + chk.summary)
+
+                let mb = self.fileMB(made.videoURL)
+                let photoMB = self.fileMB(made.photoURL)
+
+                DispatchQueue.main.async {
+                    self.endBG()
+                    if chk.ok {
+                        self.setBusy(false, "修复完成 · 结构完整")
+                        self.resultLabel.text = String(format:
+                            "✅ 已修复，相册里多了一张新的\n原状态：%@\n新产物：HEVC + 元数据轨齐全\n动态 %.2f MB · 静帧 %.2f MB\n\n设壁纸请用新生成的这张，旧的可以删掉。",
+                            diag, mb, photoMB)
+                        self.resultLabel.textColor = Theme.text
+                    } else {
+                        self.setBusy(false, "修复后仍不完整")
+                        self.resultLabel.text = "⚠️ " + chk.summary
+                            + "\n\n把日志（下方「复制日志」）发给开发者。"
+                        self.resultLabel.textColor = Theme.warn
+                    }
+                }
+            } catch {
+                let msg = error.localizedDescription
+                DispatchQueue.main.async {
+                    self.endBG()
+                    self.setBusy(false, "修复失败")
+                    self.resultLabel.text = msg
+                    self.resultLabel.textColor = Theme.danger
+                }
+            }
+        }
     }
 
     @objc private func onCopyLog() {

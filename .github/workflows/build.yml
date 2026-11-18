@@ -83,6 +83,7 @@ jobs:
             Sources/MetaFormatProvider.swift \
             Sources/LivePhotoMaker.swift \
             Sources/PhotoSaver.swift \
+            Sources/LiveRepair.swift \
             Sources/VideoPicker.swift \
             Sources/RootViewController.swift \
             Sources/AppDelegate.swift \

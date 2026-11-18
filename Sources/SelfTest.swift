@@ -50,9 +50,12 @@ enum SelfTest {
             let hasLpi = sTxt.contains("live-photo-info")
             let hasSit = sTxt.contains("still-image-time")
             let hasOri = sTxt.contains("video-orientation")
-            log("   \(hasLpi && hasSit && hasOri ? "✓" : "✗") 样本 \(sData.count / 1024)KB"
-                + " · live-photo-info=\(hasLpi) still-image-time=\(hasSit) orientation=\(hasOri)")
-            if !(hasLpi && hasSit && hasOri) {
+            // 样本里那条 video-orientation 我们**故意不用**（见 MetaTrakPorter.donorOrder），
+            // 所以这里只要求 live-photo-info + still-image-time 两条在。
+            log("   \(hasLpi && hasSit ? "✓" : "✗") 样本 \(sData.count / 1024)KB"
+                + " · live-photo-info=\(hasLpi) still-image-time=\(hasSit)"
+                + "（样本里另有一条 video-orientation=\(hasOri)，按真机基准不使用）")
+            if !(hasLpi && hasSit) {
                 end("自检中断：内置样本不完整")
                 return
             }
@@ -108,10 +111,23 @@ enum SelfTest {
             log("   video=\(vt) metadata=\(mt) identifier=\(hasId)")
             log("   mebx=\(mebx) still-image-time=\(sit) live-photo-info=\(lpi) orientation=\(ori)")
 
-            let ok = vt > 0 && mt >= 3 && hasId && mebx && sit && lpi && ori
-            log(ok ? "✅ 自检全部通过" : "⚠️ 结构不完整，见上")
+            // 断言基准 = 真机自己拍的实况照片（iPhone15,4 / iOS 27.2 实测）：
+            //   vide + live-photo-info + still-image-time + moov/meta(identifier)
+            //   **没有 video-orientation**（有它反而会与 tkhd 旋转矩阵叠加成双重旋转）
+            // 我们不做音频轨，所以 mt 期望值是 2 而不是真机的 3。
+            var problems: [String] = []
+            if vt == 0 { problems.append("没有画面轨") }
+            if mt < 2 { problems.append("元数据轨不足 2 条（实际 \(mt)）") }
+            if !hasId { problems.append("缺 content.identifier") }
+            if !mebx { problems.append("没有 mebx 轨") }
+            if !sit { problems.append("缺 still-image-time") }
+            if !lpi { problems.append("缺 live-photo-info") }
+            if ori { problems.append("多出 video-orientation（会造成方向转两次）") }
+
+            let ok = problems.isEmpty
+            log(ok ? "✅ 自检全部通过" : "⚠️ 结构不完整：" + problems.joined(separator: "、"))
             end(ok ? "✅ 自检通过：环境正常，问题只在具体视频或业务分支"
-                   : "⚠️ 自检未全通过，把日志发开发者")
+                   : "⚠️ 结构不完整：\n" + problems.joined(separator: "\n"))
         }
     }
 

@@ -27,7 +27,7 @@ TOK = token()
 
 
 def call(method: str, path: str, payload=None, raw=False):
-    cmd = ["curl", "-sSL",  "--max-time", "90",
+    cmd = ["curl", "--noproxy", "*", "-sSL",  "--max-time", "90",
            "-X", method,
            "-H", f"Authorization: token {TOK}",
            "-H", "Accept: application/vnd.github+json",
@@ -69,7 +69,7 @@ def call(method: str, path: str, payload=None, raw=False):
 
 def curl_raw(url: str, dest: pathlib.Path):
     """带 token 下载二进制（artifact / 日志）。"""
-    cmd = ["curl", "-sSL",  "--retry", "4", "--retry-delay", "3",
+    cmd = ["curl", "--noproxy", "*", "-sSL",  "--retry", "4", "--retry-delay", "3",
            "--max-time", "180", "-H", f"Authorization: token {TOK}",
            "-H", "Accept: application/vnd.github+json",
            "-H", "X-GitHub-Api-Version: 2022-11-28",
@@ -135,7 +135,7 @@ def push(root: pathlib.Path, message: str):
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "scopes":
-        p = subprocess.run(["curl", "-sSI",  "-H", f"Authorization: token {TOK}",
+        p = subprocess.run(["curl", "--noproxy", "*", "-sSI",  "-H", f"Authorization: token {TOK}",
                             "https://api.github.com/user"], capture_output=True, text=True)
         for line in p.stdout.splitlines():
             if line.lower().startswith(("x-oauth-scopes", "x-accepted")):

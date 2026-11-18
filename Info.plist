@@ -17,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>4.1</string>
+    <string>4.2</string>
     <key>CFBundleVersion</key>
-    <string>27</string>
+    <string>28</string>
     <key>CFBundleSupportedPlatforms</key>
     <array>
         <string>iPhoneOS</string>
@@ -66,7 +66,7 @@
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>需要写入相册，才能把做好的实况照片保存进去。</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>需要读取相册：① 选视频来生成实况照片；② 从你已有的实况照片里取系统格式模板（iOS 26 上这一步必须，否则系统不认）。</string>
+    <string>需要读取相册：① 选视频来生成实况照片；② 修复功能要把你已有实况照片的配对视频读回来重新生成。</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>本 App 不录音，此声明仅用于系统兼容。</string>
     <key>UIFileSharingEnabled</key>
