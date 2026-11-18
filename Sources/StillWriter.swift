@@ -54,38 +54,55 @@ enum StillWriter {
                       identifier: String,
                       dateString: String) throws -> URL {
 
-        // 路 1：HEIC（保留最高画质与 HDR 能力），写完立刻读回验证 MakerNote
+        // 路 1：HEIC（画质最好），按字节确认 MakerNote 真写进去了
         let heicURL = dir.appendingPathComponent(baseName + ".heic")
-        if writeHEIC(cgImage, to: heicURL, identifier: identifier, dateString: dateString),
-           hasMakerNote(at: heicURL, expecting: identifier) {
-            Diag.log("静帧：HEIC 内建写入 MakerNote 成功")
+        if debugWriteHEIC(cgImage, to: heicURL, identifier: identifier, dateString: dateString),
+           containsMakerNote(at: heicURL, expecting: identifier) {
+            Diag.log("静帧：HEIC 写入 MakerNote 成功")
             return heicURL
         }
+        try? FileManager.default.removeItem(at: heicURL)
 
-        // 路 2：JPEG + 手工 EXIF（MakerNote 位置完全由我们控制）
+        // 路 2：JPEG + 手工 EXIF（位置完全由我们控制，成功率最高）
         let jpgURL = dir.appendingPathComponent(baseName + ".jpg")
-        try writeJPEGWithMakerNote(cgImage, to: jpgURL, identifier: identifier, dateString: dateString)
-        if hasMakerNote(at: jpgURL, expecting: identifier) {
-            Diag.log("静帧：JPEG + 手工 EXIF 写入 MakerNote 成功")
-            return jpgURL
+        try debugWriteJPEG(cgImage, to: jpgURL, identifier: identifier, dateString: dateString)
+        guard containsMakerNote(at: jpgURL, expecting: identifier) else {
+            throw MakeError.msg("静帧 MakerNote 写入失败，产物不会被识别为实况照片")
         }
-        throw MakeError.msg("静帧 MakerNote 写入失败，产物不会被识别为实况照片")
+        Diag.log("静帧：JPEG + 手工 EXIF 写入 MakerNote 成功")
+        return jpgURL
     }
 
-    // MARK: - 验证
+    // MARK: - 验证（按字节，不信 ImageIO 的属性解析）
 
-    static func hasMakerNote(at url: URL, expecting identifier: String) -> Bool {
+    /// ImageIO 的 kCGImagePropertyExifMakerNote 不一定会把 Apple MakerNote 回吐出来，
+    /// 所以判据必须是「文件字节里确实有 Apple iOS 头部 + 我们的 UUID」。
+    /// 系统相册判定实况照片走的是原生 EXIF 解析，不依赖这个公开属性。
+    static func containsMakerNote(at url: URL, expecting identifier: String) -> Bool {
+        guard let d = try? Data(contentsOf: url) else { return false }
+        let uuid = Data(identifier.utf8)
+        guard let r = d.range(of: uuid) else { return false }
+        let pos = d.distance(from: d.startIndex, to: r.lowerBound)
+        guard pos >= 32 else { return false }
+        let headStart = d.index(d.startIndex, offsetBy: pos - 32)
+        let headEnd = d.index(d.startIndex, offsetBy: pos)
+        let prefix = d[headStart..<headEnd]
+        return prefix.starts(with: Data("Apple iOS".utf8))
+    }
+
+    /// 仅用于诊断：ImageIO 能否把 MakerNote 作为属性读回来（不作为判据）
+    static func imageIOReadsMakerNote(at url: URL) -> Bool {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [String: Any],
               let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any],
               let note = exif[kCGImagePropertyExifMakerNote as String] as? Data
         else { return false }
-        return note.range(of: Data(identifier.utf8)) != nil
+        return note.count > 40
     }
 
     // MARK: - HEIC
 
-    private static func writeHEIC(_ image: CGImage, to url: URL,
+    static func debugWriteHEIC(_ image: CGImage, to url: URL,
                                   identifier: String, dateString: String) -> Bool {
         try? FileManager.default.removeItem(at: url)
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL,
@@ -113,7 +130,7 @@ enum StillWriter {
 
     // MARK: - JPEG + 手工 EXIF
 
-    private static func writeJPEGWithMakerNote(_ image: CGImage, to url: URL,
+    static func debugWriteJPEG(_ image: CGImage, to url: URL,
                                                identifier: String, dateString: String) throws {
         try? FileManager.default.removeItem(at: url)
 

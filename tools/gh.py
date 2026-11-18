@@ -96,7 +96,8 @@ def push(root: pathlib.Path, message: str):
         if not f.is_file():
             continue
         rel = f.relative_to(root).as_posix()
-        if rel.startswith(".git/") or "/out/" in rel or rel.startswith("out/"):
+        if rel.startswith(".git/") or "/out/" in rel or rel.startswith("out/") \
+                or "__pycache__" in rel or rel.endswith(".pyc"):
             continue
         files.append((rel, f))
     print(f"待同步 {len(files)} 个文件")

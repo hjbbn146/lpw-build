@@ -36,12 +36,25 @@ do {
                                     baseName: "probe",
                                     identifier: ident,
                                     dateString: "2026:11:18 09:00:00")
-    let ok = StillWriter.hasMakerNote(at: url, expecting: ident)
+    let ok = StillWriter.containsMakerNote(at: url, expecting: ident)
     let bytes = (try? Data(contentsOf: url).count) ?? 0
-    print("PROBE chosen = \(url.lastPathComponent)  bytes=\(bytes)  makerNoteOK=\(ok)")
+    print("PROBE chosen = \(url.lastPathComponent)  bytes=\(bytes)  makerNoteBytesOK=\(ok)  imageIOReads=\(StillWriter.imageIOReadsMakerNote(at: url))")
     if !ok {
-        print("PROBE fail: maker note missing after write")
+        print("PROBE fail: maker note missing in bytes")
         exit(2)
+    }
+    // 单独看一下 HEIC 路径到底能不能带 MakerNote（决定画质上限）
+    for ext in ["heic", "jpg"] {
+        let u = dir.appendingPathComponent("probe_alone.\(ext)")
+        if ext == "heic" {
+            _ = StillWriter.debugWriteHEIC(img, to: u, identifier: ident, dateString: "2026:11:18 09:00:00")
+        } else {
+            _ = try? StillWriter.debugWriteJPEG(img, to: u, identifier: ident, dateString: "2026:11:18 09:00:00")
+        }
+        let exists = FileManager.default.fileExists(atPath: u.path)
+        let has = exists && StillWriter.containsMakerNote(at: u, expecting: ident)
+        let size = (try? Data(contentsOf: u).count) ?? 0
+        print("PROBE \(ext): exists=\(exists) bytes=\(size) makerNoteBytesOK=\(has)")
     }
 } catch {
     print("PROBE fail: \(error.localizedDescription)")
