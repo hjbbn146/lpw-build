@@ -58,6 +58,7 @@ jobs:
             Sources/Diag.swift \
             Sources/Theme.swift \
             Sources/StillWriter.swift \
+            Sources/MetaFormatProvider.swift \
             Sources/LivePhotoMaker.swift \
             Sources/PhotoSaver.swift \
             Sources/VideoPicker.swift \

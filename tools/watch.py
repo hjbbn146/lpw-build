@@ -62,15 +62,50 @@ def main() -> int:
 
 
 def grab(run) -> int:
+    # Azure blob 上的 artifact 经常连不上，优先走 Release（github.com，稳）
+    rels = call("GET", f"/repos/{OWNER}/{REPO}/releases?per_page=3")
+    tag = None
+    if isinstance(rels, list) and rels:
+        tag = rels[0].get("tag_name")
+    if tag:
+        ipa_url = f"https://github.com/{OWNER}/{REPO}/releases/download/{tag}/LiveWallpaper.ipa"
+        dest = OUT / "LiveWallpaper.ipa"
+        for attempt in range(4):
+            try:
+                curl_raw(ipa_url, dest)
+                if dest.exists() and dest.stat().st_size > 20000:
+                    print(f"release {tag} → {dest} {dest.stat().st_size} bytes")
+                    break
+            except Exception as e:
+                print(f"  下载重试 {attempt+1}: {e}", flush=True)
+                time.sleep(3)
+        probe = OUT / "probe.txt"
+        try:
+            curl_raw(f"https://github.com/{OWNER}/{REPO}/releases/download/{tag}/probe.txt", probe)
+            print("probe.txt:", probe.stat().st_size, "bytes")
+        except Exception as e:
+            print("probe.txt 下载失败:", e)
+        if dest.exists() and dest.stat().st_size > 20000:
+            return 0
+
+    # 兜底：artifact
     arts = call("GET", f"/repos/{OWNER}/{REPO}/actions/runs/{run['id']}/artifacts").get("artifacts", [])
     if not arts:
-        print("成功但没 artifact")
+        print("成功但没 artifact 也没 release")
         return 4
     art = arts[0]
     print(f"artifact {art['name']} {art['size_in_bytes']}B", flush=True)
     zp = OUT / "artifact.zip"
-    curl_raw(f"{API}/repos/{OWNER}/{REPO}/actions/artifacts/{art['id']}/zip", zp)
-    print("下载", zp.stat().st_size, "bytes")
+    for attempt in range(3):
+        try:
+            curl_raw(f"{API}/repos/{OWNER}/{REPO}/actions/artifacts/{art['id']}/zip", zp)
+            break
+        except Exception as e:
+            print("  artifact 重试:", e, flush=True)
+            time.sleep(5)
+    if not zp.exists():
+        print("artifact 也下不动")
+        return 5
     with zipfile.ZipFile(zp) as z:
         z.extractall(OUT)
     ipas = sorted(OUT.rglob("*.ipa"), key=lambda p: -p.stat().st_size)
