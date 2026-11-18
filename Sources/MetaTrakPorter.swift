@@ -6,8 +6,11 @@ import Foundation
 /// 元数据 sample 追加到第二个 mdat，moov 重新拼一次。
 ///
 /// 输出的轨结构必须与真机样本一模一样：
-///   trak1 vide(hvc1) · trak2 meta(live-photo-info)
-///   trak3 meta(still-image-time) · trak4 meta(video-orientation) · moov/meta(含 content.identifier)
+///   trak1 vide(hvc1) · trak2 meta(live-photo-info) · trak3 meta(still-image-time)
+///   · moov/meta(含 content.identifier)
+///
+/// 与真机自己拍的实况照片完全同构（真机是 vide + soun + live-photo-info + still-image-time，
+/// 我们不做音频轨，所以少一条 soun）。**不写 video-orientation**，原因见 donorOrder 注释。
 enum MetaTrakPorter {
 
     struct Report {
@@ -26,7 +29,17 @@ enum MetaTrakPorter {
         }
     }
 
-    static let donorOrder = ["live-photo-info", "still-image-time", "video-orientation"]
+    /// 只移植这两条轨。
+    ///
+    /// **为什么不要 video-orientation**（真机取证，2026-11-19）：
+    /// 从 iPhone15,4 相册拉下 6 组配对文件逐 box 比对，
+    /// 真机自己拍的（p0066，HEVC 1080×1920 单位矩阵）和第三方能用的产物（p0061/62/63/65）
+    /// **全都没有 video-orientation 这条轨**，只有我们内置样本里有。
+    /// 而它的值是 int16 = 6（表示要再转 90°）。我们的视频已经通过 tkhd matrix
+    /// 带上了 90° 旋转（竖屏拍摄的 3840×2160 编码），两条信息叠加等于转了两次：
+    /// 竖屏被转成横屏，且照片（已按显示方向取成竖图）与视频显示尺寸对不上，
+    /// 壁纸引擎判定不可用。去掉它之后，方向只由 tkhd matrix 一个来源决定。
+    static let donorOrder = ["live-photo-info", "still-image-time"]
 
     // MARK: - 入口
 
@@ -46,7 +59,7 @@ enum MetaTrakPorter {
             if donorOrder.contains(k) { donor.append((k, tk)) }
         }
         donor.sort { (donorOrder.firstIndex(of: $0.key) ?? 9) < (donorOrder.firstIndex(of: $1.key) ?? 9) }
-        guard donor.count == 3 else {
+        guard donor.count == donorOrder.count else {
             throw PortError.msg("内置样本缺少元数据轨（找到 \(donor.map { $0.key })）")
         }
 
@@ -106,8 +119,8 @@ enum MetaTrakPorter {
             var t = Array(sData[tk.off..<(tk.off + tk.size)])
             let base = tk.off
 
-            // 1) tkhd track_ID 换成本文件里唯一的值（2/3/4）
-            let tid: UInt32 = key == "live-photo-info" ? 2 : (key == "still-image-time" ? 3 : 4)
+            // 1) tkhd track_ID 换成本文件里唯一的值（2/3）
+            let tid: UInt32 = key == "live-photo-info" ? 2 : 3
             if let tkhd = BoxKit.find(sData, tk, ["tkhd"]) {
                 let p = BoxKit.payload(tkhd) - base
                 let ver = t[p]
@@ -166,7 +179,7 @@ enum MetaTrakPorter {
             rebuilt[key] = t
         }
 
-        // ---- mvhd：duration 取最长轨，next_track_ID 抬到 5
+        // ---- mvhd：duration 取最长轨，next_track_ID 抬到 4（vide + 2 条元数据轨）
         var mvh = Array(vMoovData[mvhd.off..<(mvhd.off + mvhd.size)])
         let mv = mvh[8]
         let tsOff = 8 + (mv == 0 ? 12 : 20)
@@ -175,13 +188,13 @@ enum MetaTrakPorter {
         let longest = (mts == 600 || mts == 0) ? durTicks : durTicks * mts / 600
         if mv == 0 {
             BoxKit.put32(&mvh, durOff, UInt32(longest))
-            BoxKit.put32(&mvh, 8 + 96, 5)
+            BoxKit.put32(&mvh, 8 + 96, 4)
         } else {
             BoxKit.put64(&mvh, durOff, UInt64(longest))
-            BoxKit.put32(&mvh, 8 + 104, 5)
+            BoxKit.put32(&mvh, 8 + 104, 4)
         }
 
-        // ---- 拼 moov：mvhd · 视频轨 · 3 条元数据轨 · 原 meta
+        // ---- 拼 moov：mvhd · 视频轨 · 2 条元数据轨 · 原 meta
         var payload: [UInt8] = []
         payload.append(contentsOf: mvh)
         payload.append(contentsOf: vMoovData[vTrak.off..<(vTrak.off + vTrak.size)])

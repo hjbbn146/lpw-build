@@ -404,7 +404,9 @@ final class RootViewController: UIViewController {
                 let lid = try PhotoSaver.savePair(photo: made.photoURL, video: made.videoURL)
                 let live = PhotoSaver.waitPhotoLive(localIdentifier: lid)
 
-                let chk = LiveCheck.verify(videoURL: made.videoURL)
+                let chk = LiveCheck.verify(
+                    videoURL: made.videoURL,
+                    stillSize: CGSize(width: made.info.width, height: made.info.height))
                 Diag.log("产物结构自检：" + chk.summary)
 
                 let mb = self.fileMB(made.videoURL)
@@ -415,7 +417,7 @@ final class RootViewController: UIViewController {
                     if chk.ok {
                         self.setBusy(false, "完成 · 结构完整")
                         self.resultLabel.text = String(format:
-                            "已生成：HEVC + 4 轨齐全\n动态 %.2f MB · 静帧 %.2f MB · %d×%d\n\n按下方说明设为锁屏壁纸。",
+                            "已生成：HEVC + 实况元数据轨齐全\n动态 %.2f MB · 静帧 %.2f MB · %d×%d\n\n按下方说明设为锁屏壁纸。",
                             mb, photoMB, made.info.width, made.info.height)
                         self.resultLabel.textColor = Theme.text
                     } else {
