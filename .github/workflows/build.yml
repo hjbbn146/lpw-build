@@ -33,7 +33,9 @@ jobs:
           swiftc -O -o probe_macos \
             Sources/Errors.swift \
             Sources/Diag.swift \
+            Sources/Memory.swift \
             Sources/StillWriter.swift \
+            Sources/Passthrough.swift \
             tools/probe/main.swift > probe.txt 2>&1
           if [ -x ./probe_macos ]; then
             ./probe_macos >> probe.txt 2>&1
@@ -60,6 +62,7 @@ jobs:
             Sources/StillWriter.swift \
             Sources/Memory.swift \
             Sources/CrashCatcher.swift \
+            Sources/Passthrough.swift \
             Sources/MetaFormatProvider.swift \
             Sources/LivePhotoMaker.swift \
             Sources/PhotoSaver.swift \
