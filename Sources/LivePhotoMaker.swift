@@ -85,7 +85,13 @@ enum LivePhotoMaker {
         guard total.isFinite, total > 0.4 else {
             throw MakeError.msg(String(format: "视频太短（%.2f 秒）", total.isFinite ? total : 0))
         }
-        let use = (maxSeconds > 0.2 && total > maxSeconds) ? maxSeconds : total
+        var use = (maxSeconds > 0.2 && total > maxSeconds) ? maxSeconds : total
+        // 保险丝：实况照片在 iOS 上只会播 3 秒左右，直通超长视频既没意义，
+        // 又容易把内存和磁盘一起撑爆（大视频最容易在这一步闪退）
+        if use > 15.0 {
+            Diag.log(String(format: "时长 %.2fs 超过 15 秒，自动只取前 15 秒", use))
+            use = 15.0
+        }
 
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lpw", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -113,7 +119,11 @@ enum LivePhotoMaker {
 
         // 注意：outputSettings 传 nil 表示「不解码」，直接拿原始压缩样本
         let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
-        vOut.alwaysCopiesSampleData = false
+        // 必须拷贝：设为 false 时 sample buffer 直接引用读取器内部缓冲，
+        // 读取器一前进就会复用这块内存，而写入器是异步消费的，
+        // 结果是偶发读到被覆盖的数据 → 无规律闪退。
+        // 拷贝只多一次 memcpy，压缩数据本身一个字节都没变，画质完全无损。
+        vOut.alwaysCopiesSampleData = true
         guard reader.canAdd(vOut) else { throw MakeError.msg("读取器不接受视频输出") }
         reader.add(vOut)
 
@@ -124,7 +134,7 @@ enum LivePhotoMaker {
                 aFmt = (af as! CMFormatDescription)
             }
             let ao = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil)
-            ao.alwaysCopiesSampleData = false
+            ao.alwaysCopiesSampleData = true
             if reader.canAdd(ao) {
                 reader.add(ao)
                 aOut = ao

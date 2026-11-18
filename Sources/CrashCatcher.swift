@@ -6,142 +6,132 @@ import Darwin
 /// 目标很具体：**下次再闪退，要有调用栈可看**。
 ///
 /// 两条路：
-///  1. ObjC 异常（NSException）—— 这类是「代码写错」，能抓全量堆栈；
-///  2. 致命信号（SIGABRT/SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGTRAP）—— 这类是
-///     运行期崩（数组越界、野指针、assert、内存被回收…），只能抓裸地址栈。
+///  1. ObjC 异常（NSException）—— 代码写错这类，能抓全量符号化堆栈；
+///  2. 致命信号（SIGABRT/SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGTRAP）—— 运行期崩
+///     （越界、野指针、assert、内存被回收…），抓裸地址栈。
 ///
-/// 落盘到 Documents/crash.log，重启 App 后在「文件 App → 无损实况」里可见，
-/// 也可以点 App 里的「复制日志」一起复制出来。
+/// 全部落盘到 Documents/crash.log。
 ///
-/// 实现上刻意保守：signal handler 里只做 open/write/backtrace_symbols_fd，
-/// 不调用 malloc、不拼接字符串、不用 DateFormatter —— 崩溃时堆已经可能坏了，
-/// 任何内存分配都可能二次死锁，反而什么都拿不到。
+/// 实现约束：signal handler 必须是**顶层函数**（不能是 `enum` 里的 static 闭包，
+/// 否则 Swift 判定为捕获上下文，无法转成 C 函数指针），且内部只用
+/// open/write/backtrace_symbols_fd —— 崩溃时堆可能已损坏，任何内存分配
+/// 都可能二次死锁，反而一条栈都拿不到。
+
+private typealias BTFn = @convention(c) (UnsafeMutablePointer<UnsafeMutableRawPointer?>?, Int32) -> Int32
+private typealias BTFDn = @convention(c) (UnsafeMutablePointer<UnsafeMutableRawPointer?>?, Int32, Int32) -> Void
+
+// ---- 文件级全局状态（handler 只读这些，不涉及任何对象/self）
+
+private var gBT: BTFn?
+private var gBTFd: BTFDn?
+private var gCrashPath = [CChar]()
+// 预分配，避免 handler 里再分配内存
+private var gFrames = [UnsafeMutableRawPointer?](repeating: nil, count: 64)
+
+@inline(never)
+private func cFd() -> Int32 {
+    if gCrashPath.isEmpty { return -1 }
+    var fd: Int32 = -1
+    gCrashPath.withUnsafeBufferPointer { b in
+        guard let base = b.baseAddress else { return }
+        fd = open(base, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+    }
+    return fd
+}
+
+@inline(never)
+private func cWrite(_ text: StaticString) {
+    let f = cFd()
+    if f < 0 { return }
+    text.withUTF8Buffer { buf in
+        if let p = buf.baseAddress, buf.count > 0 {
+            _ = write(f, UnsafeRawPointer(p), buf.count)
+        }
+    }
+    close(f)
+}
+
+@inline(never)
+private func cStack() {
+    let f = cFd()
+    if f < 0 { return }
+    if let bt = gBT {
+        let n = gFrames.withUnsafeMutableBufferPointer { p -> Int32 in
+            bt(p.baseAddress, 64)
+        }
+        if n > 0, let fdw = gBTFd {
+            gFrames.withUnsafeMutableBufferPointer { p in
+                fdw(p.baseAddress, n, f)
+            }
+        }
+    }
+    close(f)
+}
+
+// ---- 信号处理（顶层函数，可直接转成 C 函数指针）
+
+private func crashSignalABRT(_ s: Int32) { cWrite("\n=== crash: SIGABRT ===\n"); cStack(); signal(s, SIG_DFL); raise(s) }
+private func crashSignalSEGV(_ s: Int32) { cWrite("\n=== crash: SIGSEGV ===\n"); cStack(); signal(s, SIG_DFL); raise(s) }
+private func crashSignalBUS(_ s: Int32)  { cWrite("\n=== crash: SIGBUS ===\n");  cStack(); signal(s, SIG_DFL); raise(s) }
+private func crashSignalILL(_ s: Int32)  { cWrite("\n=== crash: SIGILL ===\n");  cStack(); signal(s, SIG_DFL); raise(s) }
+private func crashSignalFPE(_ s: Int32)  { cWrite("\n=== crash: SIGFPE ===\n");  cStack(); signal(s, SIG_DFL); raise(s) }
+private func crashSignalTRAP(_ s: Int32) { cWrite("\n=== crash: SIGTRAP ===\n"); cStack(); signal(s, SIG_DFL); raise(s) }
+
+// ---- ObjC 异常（此时堆还健在，可以正常拼字符串）
+
+private func crashException(_ ex: NSException) {
+    let df = DateFormatter()
+    df.dateFormat = "MM-dd HH:mm:ss"
+    var text = "\n=== NSException @ \(df.string(from: Date())) ===\n"
+    text += "name   : \(ex.name.rawValue)\n"
+    text += "reason : \(ex.reason ?? "-")\n"
+    text += "memory : " + Mem.summary() + "\n"
+    text += "stack:\n" + ex.callStackSymbols.joined(separator: "\n") + "\n"
+    guard let d = text.data(using: .utf8) else { return }
+    let url = Diag.dir.appendingPathComponent("crash.log")
+    if let fh = try? FileHandle(forWritingTo: url) {
+        defer { try? fh.close() }
+        _ = try? fh.seekToEnd()
+        _ = try? fh.write(contentsOf: d)
+    } else {
+        try? d.write(to: url)
+    }
+}
+
 enum CrashCatcher {
-
-    private typealias BTFn = @convention(c) (UnsafeMutablePointer<UnsafeMutableRawPointer?>?, Int32) -> Int32
-    private typealias BTFDn = @convention(c) (UnsafeMutablePointer<UnsafeMutableRawPointer?>?, Int32, Int32) -> Void
-
-    // 这两个符号不在 iOS 公开头文件里，但 libSystem 里存在。
-    // 用 dlsym 在安装阶段解析好，handler 里只读指针，绝不重复解析。
-    private static var btFn: BTFn?
-    private static var btFdFn: BTFDn?
-
-    private static var pathBuf: [CChar] = []
-
-    static func install() {
-        let p = Diag.dir.appendingPathComponent("crash.log").path
-        pathBuf = Array(p.utf8CString)
-
-        let h = dlopen(nil, RTLD_NOW)
-        if h != nil {
-            if let s = dlsym(h, "backtrace") {
-                btFn = unsafeBitCast(s, to: BTFn.self)
-            }
-            if let s = dlsym(h, "backtrace_symbols_fd") {
-                btFdFn = unsafeBitCast(s, to: BTFDn.self)
-            }
-        }
-
-        // ---- 1) ObjC 异常：这里可以安全地做字符串拼接
-        NSSetUncaughtExceptionHandler { ex in
-            let df = DateFormatter()
-            df.dateFormat = "MM-dd HH:mm:ss"
-            let head = "\n=== NSException @ \(df.string(from: Date())) ===\n"
-                + "name   : \(ex.name.rawValue)\n"
-                + "reason : \(ex.reason ?? "-")\n"
-                + "memory : \(Mem.summary())\n"
-                + "stack:\n"
-            append(head + ex.callStackSymbols.joined(separator: "\n") + "\n")
-        }
-
-        // ---- 2) 致命信号
-        for sig in [SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP] {
-            signal(sig, { s in
-                writeStatic("\n=== fatal signal ===\n")
-                writeNumber(Int(s))
-                writeStatic("\n")
-                dumpStack()
-                // 恢复默认处理并重新抛出，让系统照常生成 .ips，两边都不丢
-                signal(s, SIG_DFL)
-                raise(s)
-            })
-        }
-    }
-
-    // MARK: - 安全写（崩溃上下文可用）
-
-    private static func fd() -> Int32 {
-        guard !pathBuf.isEmpty else { return -1 }
-        return pathBuf.withUnsafeBufferPointer { b -> Int32 in
-            guard let base = b.baseAddress else { return -1 }
-            return open(base, O_WRONLY | O_CREAT | O_APPEND, 0o644)
-        }
-    }
-
-    private static func writeStatic(_ s: StaticString) {
-        let f = fd()
-        guard f >= 0 else { return }
-        s.withUTF8Buffer { buf in
-            if let p = buf.baseAddress, buf.count > 0 {
-                _ = write(f, UnsafeRawPointer(p), buf.count)
-            }
-        }
-        close(f)
-    }
-
-    /// 把整数写成十进制（不用 String(format:)，避免 malloc）
-    private static func writeNumber(_ v: Int) {
-        var n = v < 0 ? -v : v
-        var digits = [UInt8](repeating: 0, count: 24)
-        var i = 0
-        repeat {
-            digits[23 - i] = UInt8(48 + n % 10)
-            n /= 10
-            i += 1
-        } while n > 0 && i < 24
-        let f = fd()
-        guard f >= 0 else { return }
-        digits.withUnsafeBufferPointer { b in
-            if let base = b.baseAddress {
-                _ = write(f, UnsafeRawPointer(base + (24 - i)), i)
-            }
-        }
-        close(f)
-    }
-
-    private static func dumpStack() {
-        guard let bt = btFn else { return }
-        let f = fd()
-        guard f >= 0 else { return }
-        var buf = [UnsafeMutableRawPointer?](repeating: nil, count: 96)
-        let frames = buf.withUnsafeMutableBufferPointer { p in
-            bt(p.baseAddress, 96)
-        }
-        if frames > 0, let fdw = btFdFn {
-            buf.withUnsafeMutableBufferPointer { p in
-                fdw(p.baseAddress, frames, f)
-            }
-        }
-        close(f)
-    }
-
-    // MARK: - 常规追加（NSException 用）
-
-    private static func append(_ s: String) {
-        let url = Diag.dir.appendingPathComponent("crash.log")
-        guard let d = s.data(using: .utf8) else { return }
-        if let fh = try? FileHandle(forWritingTo: url) {
-            defer { try? fh.close() }
-            _ = try? fh.seekToEnd()
-            _ = try? fh.write(contentsOf: d)
-        } else {
-            try? d.write(to: url)
-        }
-    }
 
     static var logURL: URL { Diag.dir.appendingPathComponent("crash.log") }
 
+    static func install() {
+        let path = Diag.dir.appendingPathComponent("crash.log").path
+        gCrashPath = Array(path.utf8CString)
+
+        // 这两个符号不在 iOS 公开头文件里，但 libSystem 里有；
+        // 安装阶段解析一次，handler 里只读指针，绝不重复解析
+        if let h = dlopen(nil, RTLD_NOW) {
+            if let s = dlsym(h, "backtrace") {
+                gBT = unsafeBitCast(s, to: BTFn.self)
+            }
+            if let s = dlsym(h, "backtrace_symbols_fd") {
+                gBTFd = unsafeBitCast(s, to: BTFDn.self)
+            }
+        }
+
+        NSSetUncaughtExceptionHandler(crashException)
+
+        signal(SIGABRT, crashSignalABRT)
+        signal(SIGSEGV, crashSignalSEGV)
+        signal(SIGBUS, crashSignalBUS)
+        signal(SIGILL, crashSignalILL)
+        signal(SIGFPE, crashSignalFPE)
+        signal(SIGTRAP, crashSignalTRAP)
+    }
+
     static func readAll() -> String {
         (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+    }
+
+    static var hasRecord: Bool {
+        (try? Data(contentsOf: logURL))?.isEmpty == false
     }
 }
