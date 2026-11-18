@@ -198,90 +198,162 @@ enum LivePhotoMaker {
             throw MakeError.msg("启动读取失败：\(reader.error?.localizedDescription ?? "未知")")
         }
 
-        // ---- 视频样本直通
+        // ---- 1) 先把 still-image-time 写掉
         //
-        // 这个循环是整个流程里最容易「莫名其妙闪退」的地方，两个坑都在这儿：
-        //
-        // 1) 自动释放池。AVFoundation 内部每帧都会产生一堆 autorelease 对象
-        //    （CF↔NS 桥接、字典、缓冲区包装…）。GCD 的队列块只在**整块结束时**
-        //    drain 一次，循环里几十万帧全积着，内存一路涨，最后被系统的
-        //    Jetsam 直接杀掉 —— 表现就是「转几圈退回桌面、没有崩溃报告」。
-        //    所以必须逐帧包 autoreleasepool。
-        //
-        // 2) 静默失败。append 返回 false / writer 转 failed 时原来的代码只是
-        //    break，然后帧数不为 0 就继续往下走，产物其实是残的。
-        //    现在每一步都把真实原因记下来并抛出去。
-        progress("直通视频轨…")
-        Diag.log("直通开始 · 源 \(fmtSec(total))s → 取 \(fmtSec(use))s · " + Mem.summary())
+        // 只有一个样本、时间点最早，所以放在最前面写完立刻结束这条轨。
+        // 原来把它排在视频/音频都跑完之后，是死锁的成因之一：
+        // writer 发现元数据轨一直空着，会把视频 input 压住等它补齐。
+        let coverTime = CMTime(value: 1, timescale: 30)
+        let metaItem = AVMutableMetadataItem()
+        metaItem.keySpace = .quickTimeMetadata
+        metaItem.key = "com.apple.quicktime.still-image-time" as NSString
+        metaItem.value = NSNumber(value: Int8(-1))
+        metaItem.dataType = "com.apple.quicktime.metadata.datatype.int8"
 
+        let metaGroup = AVTimedMetadataGroup(
+            items: [metaItem],
+            timeRange: CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 30)))
+
+        var metaWaited = 0
+        while !mIn.isReadyForMoreMediaData && metaWaited < 2000 {
+            if writer.status != .writing { break }
+            Thread.sleep(forTimeInterval: 0.005)
+            metaWaited += 1
+        }
+        if adaptor.append(metaGroup) {
+            Diag.log("still-image-time 已写入（int8 -1，起点 0s）")
+        } else {
+            Diag.log("警告：still-image-time 追加失败："
+                     + "\(writer.error?.localizedDescription ?? "status \(writer.status.rawValue)")")
+        }
+        mIn.markAsFinished()
+
+        // ---- 2) 视频 / 音频交错直通
+        //
+        // 这里是上一版卡住的真正原因：
+        // AVAssetWriter 对多轨有「交错窗口」。如果让视频轨一路跑到底、音频轨
+        // 再从头开始，视频领先约 2 秒后 writer 就会把 video input 的
+        // isReadyForMoreMediaData 置为 false，等后进者追上来；而后进者要等
+        // 视频循环结束才动 —— 于是双方永远等不到，停在某个帧数再也不动。
+        // （上一版停在第 62 帧，30fps 下正好 ≈2 秒，非常典型。）
+        //
+        // 正确做法：不自己排顺序，交给 writer 用 requestMediaDataWhenReady
+        // 按需向每条轨要数据，交错自然成立，也不需要任何忙等。
+        progress("直通视频轨…")
+        Diag.log("直通开始 · 源 \(fmtSec(total))s → 取 \(fmtSec(use))s · 音频"
+                 + "\(aIn == nil ? "关" : "开") · " + Mem.summary())
+
+        let vQueue = DispatchQueue(label: "lpw.pass.video")
+        let aQueue = DispatchQueue(label: "lpw.pass.audio")
+        let grp = DispatchGroup()
+
+        var vDone = false
+        var aDone = (aIn == nil || aOut == nil)
+        var vErr: String?
+        var aErr: String?
         var frameCount = 0
-        var readerDone = false
-        var writeErr: String?
-        var lastBeatFrame = 0
+        var audioCount = 0
+        var lastBeat = 0
         var lastPct = -1
 
-        while !readerDone {
-            autoreleasepool {
-                guard let sb = vOut.copyNextSampleBuffer() else {
-                    readerDone = true
-                    return
-                }
-                if writer.status == .failed {
-                    writeErr = "写入器失败：\(writer.error?.localizedDescription ?? "未知")"
-                    readerDone = true
-                    return
-                }
-                // 等写入器腾出缓冲；不阻塞主线程，只是本线程小睡
-                var stall = 0
-                while !vIn.isReadyForMoreMediaData {
-                    if writer.status != .writing {
-                        writeErr = "写入器中断（第 \(frameCount) 帧）：\(writer.error?.localizedDescription ?? "状态 \(writer.status.rawValue)")"
-                        readerDone = true
-                        return
-                    }
-                    Thread.sleep(forTimeInterval: 0.003)
-                    stall += 1
-                    if stall > 4000 {                      // 约 12 秒
-                        writeErr = "写入器 12 秒内未接受数据，停在第 \(frameCount) 帧"
-                        readerDone = true
-                        return
-                    }
-                }
-                let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-                if !vIn.append(sb) {
-                    writeErr = "写入样本失败（第 \(frameCount) 帧）：\(writer.error?.localizedDescription ?? "未知")"
-                    readerDone = true
-                    return
-                }
-                frameCount += 1
+        grp.enter()                        // 视频轨
+        if !aDone { grp.enter() }          // 音频轨
 
-                // ---- 心跳：每 30 帧落一行盘（含内存水位）
-                // 万一进程被系统直接杀掉，这条就是最后的证据
-                if frameCount % 30 == 0 && frameCount != lastBeatFrame {
-                    lastBeatFrame = frameCount
-                    let sec = CMTimeGetSeconds(pts)
-                    let pct = use > 0 && sec.isFinite ? Int(min(99, max(0, sec / use * 100))) : 0
-                    let mem = Mem.footprintMB()
-                    let secText = String(format: "%.1f", sec.isFinite ? sec : 0)
-                    Diag.log("直通 \(frameCount) 帧 · \(secText)s/\(Int(use.rounded()))s"
-                             + " · \(pct)% · 内存 \(Int(mem))MB")
-                    if pct != lastPct {
-                        lastPct = pct
-                        progress("直通视频轨… \(pct)%（\(frameCount) 帧 · \(Int(mem))MB）")
+        vIn.requestMediaDataWhenReady(on: vQueue) {
+            while vIn.isReadyForMoreMediaData {
+                // 每帧一个自动释放池：AVFoundation 每帧都会产生一批临时对象，
+                // 不逐帧回收会一路涨到被系统的 Jetsam 直接杀掉
+                let finished = autoreleasepool { () -> Bool in
+                    if writer.status != .writing {
+                        vErr = "写入器中断（第 \(frameCount) 帧）："
+                            + "\(writer.error?.localizedDescription ?? "状态 \(writer.status.rawValue)")"
+                        return true
                     }
-                    // 内存兜底：占设备内存 55% 就主动收手，好过被系统静默杀掉
-                    if mem > 0 && mem > Mem.deviceMB * 0.55 {
-                        writeErr = String(format: "内存占用过高（%.0fMB），已主动停止以免被系统杀掉。"
-                                          + "建议把「保留全长」改成 3 秒，或先把视频裁短", mem)
-                        readerDone = true
+                    guard let sb = vOut.copyNextSampleBuffer() else {
+                        return true                       // 源视频读完
+                    }
+                    let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+                    if !vIn.append(sb) {
+                        vErr = "写入视频样本失败（第 \(frameCount) 帧）："
+                            + "\(writer.error?.localizedDescription ?? "未知")"
+                        return true
+                    }
+                    frameCount += 1
+
+                    // 心跳：每 30 帧落一行盘（含内存水位）。
+                    // 万一进程被系统直接杀掉，这条就是最后的证据。
+                    if frameCount % 30 == 0 && frameCount != lastBeat {
+                        lastBeat = frameCount
+                        let sec = CMTimeGetSeconds(pts)
+                        let pct = use > 0 && sec.isFinite ? Int(min(99, max(0, sec / use * 100))) : 0
+                        let mem = Mem.footprintMB()
+                        let secText = String(format: "%.1f", sec.isFinite ? sec : 0)
+                        Diag.log("直通 \(frameCount) 帧 · \(secText)s/\(Int(use.rounded()))s"
+                                 + " · \(pct)% · 内存 \(Int(mem))MB")
+                        if pct != lastPct {
+                            lastPct = pct
+                            progress("直通视频轨… \(pct)%（\(frameCount) 帧 · \(Int(mem))MB）")
+                        }
+                        if mem > 0 && mem > Mem.deviceMB * 0.55 {
+                            vErr = String(format: "内存占用过高（%.0fMB），已主动停止以免被系统杀掉。"
+                                          + "建议把时长改成 3 秒，或先把视频裁短", mem)
+                            return true
+                        }
+                    }
+                    return false
+                }
+
+                if finished {
+                    if !vDone {
+                        vDone = true
+                        vIn.markAsFinished()
+                        grp.leave()
+                    }
+                    return
+                }
+            }
+        }
+
+        if let aIn = aIn, let aOut = aOut {
+            aIn.requestMediaDataWhenReady(on: aQueue) {
+                while aIn.isReadyForMoreMediaData {
+                    let finished = autoreleasepool { () -> Bool in
+                        if writer.status != .writing { return true }
+                        guard let sb = aOut.copyNextSampleBuffer() else { return true }
+                        if !aIn.append(sb) {
+                            aErr = "写入音频样本失败："
+                                + "\(writer.error?.localizedDescription ?? "未知")"
+                            return true
+                        }
+                        audioCount += 1
+                        return false
+                    }
+                    if finished {
+                        if !aDone {
+                            aDone = true
+                            aIn.markAsFinished()
+                            grp.leave()
+                        }
                         return
                     }
                 }
             }
         }
-        vIn.markAsFinished()
 
-        if let e = writeErr {
+        // 等两条轨都自然结束。超时说明 writer 真的卡住了，报出来比静默挂着好。
+        if grp.wait(timeout: .now() + 180) == .timedOut {
+            reader.cancelReading()
+            writer.cancelWriting()
+            throw MakeError.msg("直通超时 180 秒（已写入 \(frameCount) 帧），"
+                                + "写入器长时间不接受数据。请把日志发我")
+        }
+        if let e = vErr {
+            reader.cancelReading()
+            writer.cancelWriting()
+            Diag.log("直通失败：" + e)
+            throw MakeError.msg(e)
+        }
+        if let e = aErr {
             reader.cancelReading()
             writer.cancelWriting()
             Diag.log("直通失败：" + e)
@@ -292,68 +364,7 @@ enum LivePhotoMaker {
             writer.cancelWriting()
             throw MakeError.msg("没有读到任何视频样本（源文件可能损坏）")
         }
-        Diag.log("直通完成 · \(frameCount) 帧 · " + Mem.summary())
-
-        // ---- 音频样本直通
-        if let aIn = aIn, let aOut = aOut {
-            var audioDone = false
-            var audioCount = 0
-            while !audioDone {
-                autoreleasepool {
-                    guard let sb = aOut.copyNextSampleBuffer() else {
-                        audioDone = true
-                        return
-                    }
-                    if writer.status != .writing {
-                        audioDone = true
-                        return
-                    }
-                    var stall = 0
-                    while !aIn.isReadyForMoreMediaData {
-                        if writer.status != .writing {
-                            audioDone = true
-                            return
-                        }
-                        Thread.sleep(forTimeInterval: 0.003)
-                        stall += 1
-                        if stall > 4000 {
-                            audioDone = true
-                            return
-                        }
-                    }
-                    if aIn.append(sb) { audioCount += 1 }
-                }
-            }
-            aIn.markAsFinished()
-            Diag.log("音频直通完成 · \(audioCount) 个样本")
-        }
-
-        // ---- 写 still-image-time（真机样本值就是 int8 的 -1）
-        let coverTime = CMTime(value: 1, timescale: 30)
-        let metaItem = AVMutableMetadataItem()
-        metaItem.keySpace = .quickTimeMetadata
-        metaItem.key = "com.apple.quicktime.still-image-time" as NSString
-        metaItem.value = NSNumber(value: Int8(-1))
-        metaItem.dataType = "com.apple.quicktime.metadata.datatype.int8"
-
-        let group = AVTimedMetadataGroup(items: [metaItem],
-                                        timeRange: CMTimeRange(
-                                            start: coverTime,
-                                            duration: CMTime(value: 1, timescale: 600)))
-        // 元数据轨也要等写入器 ready，否则 append 会静默返回 false
-        var metaStall = 0
-        while !mIn.isReadyForMoreMediaData && metaStall < 2000 {
-            if writer.status != .writing { break }
-            Thread.sleep(forTimeInterval: 0.005)
-            metaStall += 1
-        }
-        if !adaptor.append(group) {
-            Diag.log("警告：still-image-time 追加失败（status=\(writer.status.rawValue)）"
-                     + "\(writer.error?.localizedDescription ?? "")")
-        } else {
-            Diag.log("still-image-time 已写入（值 int8 -1）")
-        }
-        mIn.markAsFinished()
+        Diag.log("直通完成 · 视频 \(frameCount) 帧 · 音频 \(audioCount) 个样本 · " + Mem.summary())
 
         // ---- 收尾
         progress("封装收尾…")
