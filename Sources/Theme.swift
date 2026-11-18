@@ -1,17 +1,32 @@
 import UIKit
 
+// 跟随系统浅色 / 深色模式。
+// 浅色模式：纯白背景 + 浅灰卡片 + 深色文字（强调色压深，保证白底上的对比度）
+// 深色模式：深空背景 + 深灰卡片 + 白字
+private func dyn(light: UIColor, dark: UIColor) -> UIColor {
+    UIColor { trait in
+        trait.userInterfaceStyle == .dark ? dark : light
+    }
+}
+
+func hexColor(_ hex: UInt32, _ alpha: CGFloat = 1) -> UIColor {
+    UIColor(red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+            green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(hex & 0xFF) / 255.0,
+            alpha: alpha)
+}
+
 enum Theme {
-    static let background = UIColor(red: 0.043, green: 0.051, blue: 0.075, alpha: 1)
-    static let backgroundTop = UIColor(red: 0.075, green: 0.086, blue: 0.125, alpha: 1)
-    static let card = UIColor(red: 0.098, green: 0.110, blue: 0.145, alpha: 1)
-    static let cardInner = UIColor(red: 0.137, green: 0.153, blue: 0.196, alpha: 1)
-    static let accent = UIColor(red: 0.29, green: 0.87, blue: 0.72, alpha: 1)
-    static let accentDim = UIColor(red: 0.29, green: 0.87, blue: 0.72, alpha: 0.16)
-    static let text = UIColor.white
-    static let sub = UIColor(red: 0.60, green: 0.64, blue: 0.71, alpha: 1)
-    static let faint = UIColor(red: 0.42, green: 0.46, blue: 0.53, alpha: 1)
-    static let warn = UIColor(red: 1.0, green: 0.63, blue: 0.31, alpha: 1)
-    static let danger = UIColor(red: 1.0, green: 0.42, blue: 0.42, alpha: 1)
+    static let background = dyn(light: .white, dark: hexColor(0x0B0D13))
+    static let card       = dyn(light: hexColor(0xF2F4F7), dark: hexColor(0x191C25))
+    static let cardInner  = dyn(light: hexColor(0xE8EBF0), dark: hexColor(0x232733))
+    static let accent     = dyn(light: hexColor(0x0E9F7E), dark: hexColor(0x4ADEBB))
+    static let onAccent   = dyn(light: .white, dark: hexColor(0x04160F))
+    static let text       = dyn(light: hexColor(0x111318), dark: .white)
+    static let sub        = dyn(light: hexColor(0x5B6472), dark: hexColor(0x99A1AF))
+    static let faint      = dyn(light: hexColor(0x8A93A3), dark: hexColor(0x6B7482))
+    static let warn       = dyn(light: hexColor(0xB45309), dark: hexColor(0xFFA05C))
+    static let danger     = dyn(light: hexColor(0xD92D20), dark: hexColor(0xFF6B6B))
 
     static func titleFont(_ size: CGFloat) -> UIFont {
         UIFont.systemFont(ofSize: size, weight: .bold)
@@ -46,16 +61,12 @@ enum Ctl {
         v.backgroundColor = Theme.card
         v.layer.cornerRadius = 18
         v.layer.cornerCurve = .continuous
-        v.layer.borderWidth = 1
-        v.layer.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
         v.translatesAutoresizingMaskIntoConstraints = false
         return v
     }
 
     static func sectionTag(_ text: String) -> UILabel {
-        let l = label(text, size: 11.5, weight: .semibold, color: Theme.accent)
-        l.font = UIFont.systemFont(ofSize: 11.5, weight: .bold)
-        return l
+        label(text, size: 11.5, weight: .bold, color: Theme.accent)
     }
 
     static func button(_ title: String,
@@ -73,20 +84,5 @@ enum Ctl {
         b.translatesAutoresizingMaskIntoConstraints = false
         b.heightAnchor.constraint(equalToConstant: height).isActive = true
         return b
-    }
-
-    // 生成一张渐变图给背景用（避免额外资源文件）
-    static func gradientImage(size: CGSize) -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: size)
-        return renderer.image { ctx in
-            let colors = [Theme.backgroundTop.cgColor, Theme.background.cgColor] as CFArray
-            guard let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                     colors: colors,
-                                     locations: [0, 0.55]) else { return }
-            ctx.cgContext.drawLinearGradient(g,
-                                             start: .zero,
-                                             end: CGPoint(x: 0, y: size.height),
-                                             options: [])
-        }
     }
 }

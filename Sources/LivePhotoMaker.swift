@@ -142,20 +142,9 @@ enum LivePhotoMaker {
         }
 
         // ---- still-image-time 元数据轨（iOS 靠它认定这是实况照片）
-        var metaFmt: CMFormatDescription?
-        let spec: [String: Any] = [
-            kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as String:
-                "mdta/com.apple.quicktime.still-image-time",
-            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as String:
-                "com.apple.quicktime.metadata.datatype.int8"
-        ]
-        let st = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-            allocator: kCFAllocatorDefault,
-            metadataType: kCMMetadataFormatType_Boxed,
-            metadataSpecifications: [spec] as CFArray,
-            formatDescriptionOut: &metaFmt)
-        guard st == noErr, let mf = metaFmt else {
-            throw MakeError.msg("still-image-time 元数据格式创建失败（\(st)）")
+        guard let mf = makeStillImageTimeFormat() else {
+            throw MakeError.msg("still-image-time 元数据格式创建失败：试过 5 种参数组合都不行，"
+                                + "请把日志发我（含每种组合的 OSStatus）")
         }
 
         let mIn = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: mf)
@@ -284,6 +273,59 @@ enum LivePhotoMaker {
         let info = MediaInspector.inspect(source) ?? VideoInfo()
         Diag.log("生成完成：\(info.width)×\(info.height) \(info.codec) \(frameCount) 帧，标识 \(identifier)")
         return MadeLive(videoURL: videoURL, photoURL: photoURL, identifier: identifier, info: info)
+    }
+
+    // MARK: - 元数据格式描述
+    //
+    // CMMetadataFormatDescriptionCreateWithMetadataSpecifications 对参数很挑，
+    // 用一个不对就回 -12710（kCMFormatDescriptionError_InvalidParameter）。
+    // 这里按「最稳 → 最可能被挑刺」的顺序逐个试，任何一种通过就用，
+    // 并把每种组合的 OSStatus 写进日志，方便下次直接定位。
+    static func makeStillImageTimeFormat() -> CMFormatDescription? {
+        let idKey = kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as String
+        let dtKey = kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as String
+        let int8Type = "com.apple.quicktime.metadata.datatype.int8"
+        let prefixed = "mdta/com.apple.quicktime.still-image-time"
+        let plain = "com.apple.quicktime.still-image-time"
+
+        // 1) NSDictionary + NSArray 显式桥接
+        let combos: [(String, String, String?)] = [
+            ("ns/mdta/int8", prefixed, int8Type),
+            ("ns/plain/int8", plain, int8Type),
+            ("ns/mdta/nodt", prefixed, nil),
+            ("ns/plain/nodt", plain, nil)
+        ]
+        for (label, id, dt) in combos {
+            let d = NSMutableDictionary()
+            d[idKey] = id
+            if let dt = dt { d[dtKey] = dt }
+            var fmt: CMFormatDescription?
+            let st = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+                allocator: kCFAllocatorDefault,
+                metadataType: kCMMetadataFormatType_Boxed,
+                metadataSpecifications: NSArray(object: d),
+                formatDescriptionOut: &fmt)
+            if st == noErr, let f = fmt {
+                Diag.log("元数据格式 \(label)：创建成功")
+                return f
+            }
+            Diag.log("元数据格式 \(label)：失败 status=\(st)")
+        }
+
+        // 2) Swift 数组直接 as CFArray（老写法，有的系统版本反而只吃这个）
+        let spec: [String: Any] = [idKey: prefixed, dtKey: int8Type]
+        var fmt2: CMFormatDescription?
+        let st2 = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+            allocator: kCFAllocatorDefault,
+            metadataType: kCMMetadataFormatType_Boxed,
+            metadataSpecifications: [spec] as CFArray,
+            formatDescriptionOut: &fmt2)
+        if st2 == noErr, let f = fmt2 {
+            Diag.log("元数据格式 swiftarray/mdta/int8：创建成功")
+            return f
+        }
+        Diag.log("元数据格式 swiftarray/mdta/int8：失败 status=\(st2)")
+        return nil
     }
 
     // MARK: - 时间格式

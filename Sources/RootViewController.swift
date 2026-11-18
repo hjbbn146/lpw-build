@@ -16,14 +16,14 @@ final class RootViewController: UIViewController {
     private let content = UIStackView()
 
     private let fileLabel = Ctl.label("尚未选择视频", size: 12.5, color: Theme.faint, lines: 2)
-    private let pickButton = Ctl.button("从相册选择视频", bg: Theme.accent, fg: UIColor(red: 0.02, green: 0.06, blue: 0.05, alpha: 1), height: 50)
+    private let pickButton = Ctl.button("从相册选择视频", bg: Theme.accent, fg: Theme.onAccent, height: 50)
 
     private var infoValues: [UILabel] = []
 
     private let seg = UISegmentedControl(items: ["3 秒", "5 秒", "保留全长"])
     private let audioSwitch = UISwitch()
 
-    private let genButton = Ctl.button("生成实况壁纸", bg: Theme.accent, fg: UIColor(red: 0.02, green: 0.06, blue: 0.05, alpha: 1), height: 56, size: 17)
+    private let genButton = Ctl.button("生成实况壁纸", bg: Theme.accent, fg: Theme.onAccent, height: 56, size: 17)
 
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let statusLabel = Ctl.label("", size: 12.5, color: Theme.sub, lines: 4)
@@ -51,18 +51,31 @@ final class RootViewController: UIViewController {
     // MARK: - 背景
 
     private func buildBackground() {
+        // 纯色背景，跟随系统浅色 / 深色（浅色模式就是纯白）
         view.backgroundColor = Theme.background
-        let bg = UIImageView()
-        bg.image = Ctl.gradientImage(size: CGSize(width: 400, height: 900))
-        bg.contentMode = .scaleToFill
-        bg.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(bg)
-        NSLayoutConstraint.activate([
-            bg.topAnchor.constraint(equalTo: view.topAnchor),
-            bg.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            bg.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            bg.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
+        scroll.backgroundColor = .clear
+    }
+
+    // 状态栏文字跟着模式反色，避免白底上出现白字
+    override var preferredStatusBarStyle: UIStatusBarStyle {
+        traitCollection.userInterfaceStyle == .dark ? .lightContent : .darkContent
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle {
+            setNeedsStatusBarAppearanceUpdate()
+            view.backgroundColor = Theme.background
+            applySegmentStyle()
+        }
+    }
+
+    private func applySegmentStyle() {
+        seg.selectedSegmentTintColor = Theme.accent
+        seg.setTitleTextAttributes([.foregroundColor: Theme.onAccent,
+                                    .font: Theme.font(13, .semibold)], for: .selected)
+        seg.setTitleTextAttributes([.foregroundColor: Theme.sub,
+                                    .font: Theme.font(13, .medium)], for: .normal)
     }
 
     // MARK: - 布局
@@ -114,11 +127,7 @@ final class RootViewController: UIViewController {
         // 卡片 3：输出设置
         let (card3, s3) = cardBox("输出设置")
         seg.selectedSegmentIndex = 0
-        seg.selectedSegmentTintColor = Theme.accent
-        seg.setTitleTextAttributes([.foregroundColor: UIColor(red: 0.02, green: 0.06, blue: 0.05, alpha: 1),
-                                    .font: Theme.font(13, .semibold)], for: .selected)
-        seg.setTitleTextAttributes([.foregroundColor: Theme.sub,
-                                    .font: Theme.font(13, .medium)], for: .normal)
+        applySegmentStyle()
         seg.translatesAutoresizingMaskIntoConstraints = false
         seg.heightAnchor.constraint(equalToConstant: 34).isActive = true
         s3.addArrangedSubview(seg)
