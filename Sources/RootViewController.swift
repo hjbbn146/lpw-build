@@ -30,6 +30,8 @@ final class RootViewController: UIViewController {
 
     private let resultLabel = Ctl.label("尚未生成", size: 13, color: Theme.sub, lines: 3)
     private let openPhotosButton = Ctl.button("打开相册", bg: Theme.cardInner, fg: Theme.text, height: 42, size: 14)
+    private let selfTestButton = Ctl.button("环境自检（点一次就知道问题在哪）",
+                                            bg: Theme.cardInner, fg: Theme.accent, height: 42, size: 14)
 
     private let logLabel = Ctl.label("", size: 10, color: Theme.faint, lines: 9, mono: true)
     private var logLines: [String] = []
@@ -167,6 +169,8 @@ final class RootViewController: UIViewController {
         let (card4, s4) = cardBox("结果")
         s4.addArrangedSubview(resultLabel)
         s4.addArrangedSubview(openPhotosButton)
+        selfTestButton.addTarget(self, action: #selector(onSelfTest), for: .touchUpInside)
+        s4.addArrangedSubview(selfTestButton)
         content.addArrangedSubview(card4)
 
         // 日志
@@ -369,6 +373,23 @@ final class RootViewController: UIViewController {
                 }
             }
         }
+    }
+
+    @objc private func onSelfTest() {
+        guard !busy else { return }
+        setBusy(true, "自检中…")
+        resultLabel.text = "正在跑完整链路自检…"
+        resultLabel.textColor = Theme.sub
+        SelfTest.run(step: { [weak self] line in
+            self?.statusLabel.text = line
+        }, finish: { [weak self] summary in
+            guard let self = self else { return }
+            self.endBG()
+            self.setBusy(false, "自检结束")
+            self.resultLabel.text = summary
+            self.resultLabel.textColor = summary.hasPrefix("✅") ? Theme.accent : Theme.warn
+        })
+        beginBG()
     }
 
     @objc private func onCopyLog() {

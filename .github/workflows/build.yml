@@ -63,6 +63,7 @@ jobs:
             Sources/Memory.swift \
             Sources/CrashCatcher.swift \
             Sources/Passthrough.swift \
+            Sources/SelfTest.swift \
             Sources/MetaFormatProvider.swift \
             Sources/LivePhotoMaker.swift \
             Sources/PhotoSaver.swift \
