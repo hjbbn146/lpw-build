@@ -28,11 +28,12 @@ enum Passthrough {
                         outputURL: URL,
                         maxSeconds: Double,
                         keepAudio: Bool,          // 保留参数兼容调用方；本版忽略，强制无音轨
-                        metaFormat: CMFormatDescription?,
+                        metaFormat: CMFormatDescription?,   // v2.7 忽略：不写元数据轨
                         identifier: String,
                         progress: @escaping (String) -> Void) throws -> Result {
 
         _ = keepAudio
+        _ = metaFormat
         var result = Result()
         result.identifier = identifier
 
@@ -102,25 +103,16 @@ enum Passthrough {
         }
         writer.add(vIn)
 
-        // ---- 元数据轨：iOS 靠 still-image-time 认定这是实况照片
-        var mIn: AVAssetWriterInput?
-        var adaptor: AVAssetWriterInputMetadataAdaptor?
-        if let mf = metaFormat {
-            let mi = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: mf)
-            mi.expectsMediaDataInRealTime = false
-            if writer.canAdd(mi) {
-                writer.add(mi)
-                mIn = mi
-                adaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: mi)
-            } else {
-                Diag.log("警告：写入器不接受元数据轨，产物可能不被识别为实况")
-            }
-        }
+        // ---- 不写 still-image-time 元数据轨（v2.7）
+        // CI 实测：视频单轨 + writer.metadata(content.identifier) 能跑完 94 帧；
+        // 一旦加入真实 mebx 元数据轨，进程信号级崩溃（连 Swift catch 都进不去）。
+        // Live Photo 配对的核心是 content.identifier（照片 MakerNote UUID = 视频 moov/meta UUID）
+        // + PhotoKit pairedVideo 同一次提交，still-image-time 不是必需的。
 
         // ---- 顶层元数据：配对标识必须与静帧 MakerNote 里的 UUID 完全一致
         //
-        // content.identifier 是相册把「照片 + 视频」认成一体的依据之一，
-        // 和 still-image-time 缺一不可。
+        // content.identifier 是相册把「照片 + 视频」认成一体的核心依据：
+        // 照片 MakerNote 里的 UUID 与这里必须完全一致。
         let idItem = AVMutableMetadataItem()
         idItem.keySpace = .quickTimeMetadata
         idItem.key = "com.apple.quicktime.content.identifier" as NSString
@@ -135,7 +127,7 @@ enum Passthrough {
 
         // ---- 开跑
         Diag.log("阶段: writer 已建好（video=\(writer.inputs.contains { $0.mediaType == .video })"
-                 + " audio=关 meta=\(mIn != nil)）")
+                 + " audio=关 meta=关）")
 
         guard writer.startWriting() else {
             throw MakeError.msg("启动写入失败：\(writer.error?.localizedDescription ?? "未知")")
@@ -230,44 +222,6 @@ enum Passthrough {
         result.frames = frameCount
         result.audioSamples = 0
         Diag.log("直通完成 · 视频 \(frameCount) 帧 · 无音轨 · " + Mem.summary())
-
-        // ---- 最后补 still-image-time
-        //
-        // 位置很讲究：必须放在视频/音频都写完之后、finishWriting 之前。
-        //
-        // 试过把它提到最前面（先写元数据再 markAsFinished），理论上能让
-        // writer 少协调一条轨，但真机 iOS 26 上会立刻崩溃 ——
-        // 「一条轨在其余轨还没有任何数据时就宣告结束」这个状态它不接受。
-        // 而放在最后并不会造成交错阻塞：writer 的交错窗口只约束
-        // 「已经在产生数据的轨」，一条自始至终空着的轨不参与滞后计算
-        //（实测卡在第 62 帧那次，是音频轨落后 2 秒导致的，不是元数据轨）。
-        if let mi = mIn, let ad = adaptor {
-            let item = AVMutableMetadataItem()
-            item.keySpace = .quickTimeMetadata
-            item.key = "com.apple.quicktime.still-image-time" as NSString
-            item.value = NSNumber(value: Int8(-1))
-            item.dataType = "com.apple.quicktime.metadata.datatype.int8"
-
-            let metaGroup = AVTimedMetadataGroup(
-                items: [item],
-                timeRange: CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 30)))
-
-            Diag.log("阶段: 准备写 still-image-time（mIn ready=\(mi.isReadyForMoreMediaData)"
-                     + " writerStatus=\(writer.status.rawValue)）")
-            var waited = 0
-            while !mi.isReadyForMoreMediaData && waited < 2000 {
-                if writer.status != .writing { break }
-                Thread.sleep(forTimeInterval: 0.005)
-                waited += 1
-            }
-            if ad.append(metaGroup) {
-                Diag.log("still-image-time 已写入（int8 -1）")
-            } else {
-                Diag.log("警告：still-image-time 追加失败："
-                         + "\(writer.error?.localizedDescription ?? "status \(writer.status.rawValue)")")
-            }
-            mi.markAsFinished()
-        }
 
         // ---- 收尾
         progress("封装收尾…")
