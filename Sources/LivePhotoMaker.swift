@@ -96,6 +96,16 @@ enum LivePhotoMaker {
 
         let identifier = UUID().uuidString
 
+        // ---- 磁盘预检：直通不压缩，输出体积 ≈ 码率 × 时长
+        let estMB = Double(vTrack.estimatedDataRate) * use / 8.0 / 1_048_576.0
+        let freeMB = Mem.freeDiskMB()
+        Diag.log(String(format: "预检 · 预估输出 %.1fMB · 磁盘剩余 %.0fMB · 内存 %.0fMB",
+                        estMB, freeMB, Mem.footprintMB()))
+        if freeMB > 0 && estMB > 0 && freeMB < estMB * 2 + 80 {
+            throw MakeError.msg(String(format: "磁盘空间不够：这段视频直通后约 %.0fMB，当前只剩 %.0fMB。"
+                                      + "请先改成「3 秒」或清理空间后重试", estMB, freeMB))
+        }
+
         // ---- 读取器
         let reader = try AVAssetReader(asset: asset)
         reader.timeRange = CMTimeRange(start: .zero,
@@ -179,47 +189,133 @@ enum LivePhotoMaker {
         }
 
         // ---- 视频样本直通
+        //
+        // 这个循环是整个流程里最容易「莫名其妙闪退」的地方，两个坑都在这儿：
+        //
+        // 1) 自动释放池。AVFoundation 内部每帧都会产生一堆 autorelease 对象
+        //    （CF↔NS 桥接、字典、缓冲区包装…）。GCD 的队列块只在**整块结束时**
+        //    drain 一次，循环里几十万帧全积着，内存一路涨，最后被系统的
+        //    Jetsam 直接杀掉 —— 表现就是「转几圈退回桌面、没有崩溃报告」。
+        //    所以必须逐帧包 autoreleasepool。
+        //
+        // 2) 静默失败。append 返回 false / writer 转 failed 时原来的代码只是
+        //    break，然后帧数不为 0 就继续往下走，产物其实是残的。
+        //    现在每一步都把真实原因记下来并抛出去。
         progress("直通视频轨…")
+        Diag.log("直通开始 · 源 \(fmtSec(total))s → 取 \(fmtSec(use))s · " + Mem.summary())
+
         var frameCount = 0
-        while let sb = vOut.copyNextSampleBuffer() {
-            if writer.status == .failed { break }
-            var stall = 0
-            while !vIn.isReadyForMoreMediaData {
-                if writer.status == .failed { break }
-                Thread.sleep(forTimeInterval: 0.002)
-                stall += 1
-                if stall > 6000 { break }       // 约 12 秒保护
-            }
-            if writer.status == .failed { break }
-            if !vIn.append(sb) { break }
-            frameCount += 1
-            if frameCount % 90 == 0 {
-                progress("直通中… 已写入 \(frameCount) 帧")
+        var readerDone = false
+        var writeErr: String?
+        var lastBeatFrame = 0
+        var lastPct = -1
+
+        while !readerDone {
+            autoreleasepool {
+                guard let sb = vOut.copyNextSampleBuffer() else {
+                    readerDone = true
+                    return
+                }
+                if writer.status == .failed {
+                    writeErr = "写入器失败：\(writer.error?.localizedDescription ?? "未知")"
+                    readerDone = true
+                    return
+                }
+                // 等写入器腾出缓冲；不阻塞主线程，只是本线程小睡
+                var stall = 0
+                while !vIn.isReadyForMoreMediaData {
+                    if writer.status != .writing {
+                        writeErr = "写入器中断（第 \(frameCount) 帧）：\(writer.error?.localizedDescription ?? "状态 \(writer.status.rawValue)")"
+                        readerDone = true
+                        return
+                    }
+                    Thread.sleep(forTimeInterval: 0.003)
+                    stall += 1
+                    if stall > 4000 {                      // 约 12 秒
+                        writeErr = "写入器 12 秒内未接受数据，停在第 \(frameCount) 帧"
+                        readerDone = true
+                        return
+                    }
+                }
+                let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+                if !vIn.append(sb) {
+                    writeErr = "写入样本失败（第 \(frameCount) 帧）：\(writer.error?.localizedDescription ?? "未知")"
+                    readerDone = true
+                    return
+                }
+                frameCount += 1
+
+                // ---- 心跳：每 30 帧落一行盘（含内存水位）
+                // 万一进程被系统直接杀掉，这条就是最后的证据
+                if frameCount % 30 == 0 && frameCount != lastBeatFrame {
+                    lastBeatFrame = frameCount
+                    let sec = CMTimeGetSeconds(pts)
+                    let pct = use > 0 && sec.isFinite ? Int(min(99, max(0, sec / use * 100))) : 0
+                    let mem = Mem.footprintMB()
+                    let secText = String(format: "%.1f", sec.isFinite ? sec : 0)
+                    Diag.log("直通 \(frameCount) 帧 · \(secText)s/\(Int(use.rounded()))s"
+                             + " · \(pct)% · 内存 \(Int(mem))MB")
+                    if pct != lastPct {
+                        lastPct = pct
+                        progress("直通视频轨… \(pct)%（\(frameCount) 帧 · \(Int(mem))MB）")
+                    }
+                    // 内存兜底：占设备内存 55% 就主动收手，好过被系统静默杀掉
+                    if mem > 0 && mem > Mem.deviceMB * 0.55 {
+                        writeErr = String(format: "内存占用过高（%.0fMB），已主动停止以免被系统杀掉。"
+                                          + "建议把「保留全长」改成 3 秒，或先把视频裁短", mem)
+                        readerDone = true
+                        return
+                    }
+                }
             }
         }
         vIn.markAsFinished()
 
+        if let e = writeErr {
+            reader.cancelReading()
+            writer.cancelWriting()
+            Diag.log("直通失败：" + e)
+            throw MakeError.msg(e)
+        }
         if frameCount == 0 {
             reader.cancelReading()
             writer.cancelWriting()
             throw MakeError.msg("没有读到任何视频样本（源文件可能损坏）")
         }
+        Diag.log("直通完成 · \(frameCount) 帧 · " + Mem.summary())
 
         // ---- 音频样本直通
         if let aIn = aIn, let aOut = aOut {
-            while let sb = aOut.copyNextSampleBuffer() {
-                if writer.status == .failed { break }
-                var stall = 0
-                while !aIn.isReadyForMoreMediaData {
-                    if writer.status == .failed { break }
-                    Thread.sleep(forTimeInterval: 0.002)
-                    stall += 1
-                    if stall > 6000 { break }
+            var audioDone = false
+            var audioCount = 0
+            while !audioDone {
+                autoreleasepool {
+                    guard let sb = aOut.copyNextSampleBuffer() else {
+                        audioDone = true
+                        return
+                    }
+                    if writer.status != .writing {
+                        audioDone = true
+                        return
+                    }
+                    var stall = 0
+                    while !aIn.isReadyForMoreMediaData {
+                        if writer.status != .writing {
+                            audioDone = true
+                            return
+                        }
+                        Thread.sleep(forTimeInterval: 0.003)
+                        stall += 1
+                        if stall > 4000 {
+                            audioDone = true
+                            return
+                        }
+                    }
+                    if aIn.append(sb) { audioCount += 1 }
                 }
-                if writer.status == .failed { break }
-                if !aIn.append(sb) { break }
             }
             aIn.markAsFinished()
+            Diag.log("音频直通完成 · \(audioCount) 个样本")
         }
 
         // ---- 写 still-image-time（真机样本值就是 int8 的 -1）
@@ -234,8 +330,18 @@ enum LivePhotoMaker {
                                         timeRange: CMTimeRange(
                                             start: coverTime,
                                             duration: CMTime(value: 1, timescale: 600)))
+        // 元数据轨也要等写入器 ready，否则 append 会静默返回 false
+        var metaStall = 0
+        while !mIn.isReadyForMoreMediaData && metaStall < 2000 {
+            if writer.status != .writing { break }
+            Thread.sleep(forTimeInterval: 0.005)
+            metaStall += 1
+        }
         if !adaptor.append(group) {
-            Diag.log("警告：still-image-time 追加失败")
+            Diag.log("警告：still-image-time 追加失败（status=\(writer.status.rawValue)）"
+                     + "\(writer.error?.localizedDescription ?? "")")
+        } else {
+            Diag.log("still-image-time 已写入（值 int8 -1）")
         }
         mIn.markAsFinished()
 
@@ -243,13 +349,14 @@ enum LivePhotoMaker {
         progress("封装收尾…")
         let sem = DispatchSemaphore(value: 0)
         writer.finishWriting { sem.signal() }
-        if sem.wait(timeout: .now() + 180) == .timedOut {
+        if sem.wait(timeout: .now() + 90) == .timedOut {
             writer.cancelWriting()
-            throw MakeError.msg("写入超时（视频可能过大）")
+            throw MakeError.msg("封装超时 90 秒（视频过大或磁盘写入过慢）")
         }
         guard writer.status == .completed else {
-            throw MakeError.msg("收尾失败：\(writer.error?.localizedDescription ?? "未知")")
+            throw MakeError.msg("收尾失败：\(writer.error?.localizedDescription ?? "状态 \(writer.status.rawValue)")")
         }
+        Diag.log("封装完成 · 产物 \(String(format: "%.1f", fileMB(videoURL)))MB · " + Mem.summary())
 
         // ---- 静帧
         progress("提取静帧…")
@@ -259,12 +366,22 @@ enum LivePhotoMaker {
         gen.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 30)
         gen.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 30)
 
-        let cg: CGImage
-        do {
-            cg = try gen.copyCGImage(at: coverTime, actualTime: nil)
-        } catch {
-            throw MakeError.msg("取帧失败：\(error.localizedDescription)")
+        var cg: CGImage?
+        autoreleasepool {
+            cg = try? gen.copyCGImage(at: coverTime, actualTime: nil)
         }
+        // 关键帧不落在 1/30 秒附近时，第一次可能取不到；放宽容差再试一次
+        if cg == nil {
+            gen.requestedTimeToleranceBefore = .positiveInfinity
+            gen.requestedTimeToleranceAfter = .positiveInfinity
+            autoreleasepool {
+                cg = try? gen.copyCGImage(at: coverTime, actualTime: nil)
+            }
+        }
+        guard let cg = cg else {
+            throw MakeError.msg("取帧失败：无法解码视频画面（可能是 HEVC 10bit/HDR 素材）")
+        }
+        Diag.log("静帧已解码：\(cg.width)×\(cg.height) bpc=\(cg.bitsPerComponent) " + Mem.summary())
 
         let photoURL = try StillWriter.write(cgImage: cg,
                                              to: dir,
@@ -275,6 +392,17 @@ enum LivePhotoMaker {
         let info = MediaInspector.inspect(source) ?? VideoInfo()
         Diag.log("生成完成：\(info.width)×\(info.height) \(info.codec) \(frameCount) 帧，标识 \(identifier)")
         return MadeLive(videoURL: videoURL, photoURL: photoURL, identifier: identifier, info: info)
+    }
+
+    // MARK: - 小工具
+
+    private static func fmtSec(_ s: Double) -> String {
+        s.isFinite ? String(format: "%.2f", s) : "—"
+    }
+
+    private static func fileMB(_ url: URL) -> Double {
+        let a = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return Double((a?[.size] as? NSNumber)?.doubleValue ?? 0) / 1_048_576.0
     }
 
     // MARK: - 元数据格式描述

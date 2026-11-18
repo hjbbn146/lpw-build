@@ -287,6 +287,24 @@ final class RootViewController: UIViewController {
         present(p.makeController(), animated: true, completion: nil)
     }
 
+    // 生成期间申请后台任务额度，避免切出去再回来时 AVFoundation 状态错乱
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid
+
+    private func beginBG() {
+        guard bgTask == .invalid else { return }
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "lpw.make") { [weak self] in
+            guard let self = self, self.bgTask != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(self.bgTask)
+            self.bgTask = .invalid
+        }
+    }
+
+    private func endBG() {
+        guard bgTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(bgTask)
+        bgTask = .invalid
+    }
+
     @objc private func onGenerate() {
         guard !busy else { return }
         guard let src = sourceURL else {
@@ -305,6 +323,7 @@ final class RootViewController: UIViewController {
         resultLabel.text = "处理中…"
         resultLabel.textColor = Theme.sub
         setBusy(true, "准备中…")
+        beginBG()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -326,6 +345,7 @@ final class RootViewController: UIViewController {
                 let photoMB = self.fileMB(made.photoURL)
 
                 DispatchQueue.main.async {
+                    self.endBG()
                     self.setBusy(false, live ? "完成 · 已识别为实况照片" : "已写入相册，但系统未标为实况")
                     if live {
                         self.resultLabel.text = String(format:
@@ -342,6 +362,7 @@ final class RootViewController: UIViewController {
             } catch {
                 let msg = error.localizedDescription
                 DispatchQueue.main.async {
+                    self.endBG()
                     self.setBusy(false, "失败")
                     self.resultLabel.text = "❌ " + msg
                     self.resultLabel.textColor = Theme.danger
@@ -353,8 +374,13 @@ final class RootViewController: UIViewController {
     @objc private func onCopyLog() {
         let text = (try? String(contentsOf: Diag.logURL, encoding: .utf8)) ?? logLines.joined(separator: "\n")
         let boot = (try? String(contentsOf: Diag.bootURL, encoding: .utf8)) ?? ""
-        UIPasteboard.general.string = "=== boot.log ===\n" + boot + "\n=== lpw.log ===\n" + text
-        statusLabel.text = "日志已复制到剪贴板"
+        let crash = CrashCatcher.readAll()
+        var all = "=== boot.log ===\n" + boot + "\n=== lpw.log ===\n" + text
+        if !crash.isEmpty {
+            all += "\n=== crash.log ===\n" + crash
+        }
+        UIPasteboard.general.string = all
+        statusLabel.text = crash.isEmpty ? "日志已复制到剪贴板" : "日志已复制（含崩溃记录）"
     }
 
     @objc private func onOpenPhotos() {

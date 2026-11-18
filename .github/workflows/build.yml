@@ -58,6 +58,8 @@ jobs:
             Sources/Diag.swift \
             Sources/Theme.swift \
             Sources/StillWriter.swift \
+            Sources/Memory.swift \
+            Sources/CrashCatcher.swift \
             Sources/MetaFormatProvider.swift \
             Sources/LivePhotoMaker.swift \
             Sources/PhotoSaver.swift \
