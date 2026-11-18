@@ -51,11 +51,17 @@ jobs:
           rm -rf build
           mkdir -p "$APP"
 
+          # ObjC @try/@catch 桥接：拦截真机上 appendTimedMetadataGroup: 的异常
+          xcrun -sdk iphoneos clang -arch arm64 \
+            -isysroot "$SDK" -miphoneos-version-min=16.0 -O -c \
+            Sources/MetadataGuard.m -o build/MetadataGuard.o
+
           xcrun -sdk iphoneos swiftc \
             -target arm64-apple-ios16.0 \
             -O \
             -module-name LiveWallpaper \
             -o "$APP/LiveWallpaper" \
+            build/MetadataGuard.o \
             Sources/Errors.swift \
             Sources/Diag.swift \
             Sources/Theme.swift \

@@ -2,6 +2,13 @@ import Foundation
 import AVFoundation
 import CoreMedia
 
+// Objective-C @try/@catch 桥接：Swift 的 do/catch 抓不到 ObjC 异常。
+// 真机崩溃栈确认 appendTimedMetadataGroup: 在 iOS 27 抛异常 → SIGABRT。
+@_silgen_name("LPWAppendMetadata")
+private func lpwAppendMetadata(_ adaptor: AnyObject, _ group: AnyObject) -> Int32
+@_silgen_name("LPWLastMetadataError")
+private func lpwLastMetadataError() -> UnsafePointer<CChar>?
+
 /// 视频轨 / 音频轨的零重编码直通。
 ///
 /// 从 LivePhotoMaker 里抽出来单独一个类型，原因是它既能被 App 调用，
@@ -103,11 +110,21 @@ enum Passthrough {
         }
         writer.add(vIn)
 
-        // ---- 不写 still-image-time 元数据轨（v2.7）
-        // CI 实测：视频单轨 + writer.metadata(content.identifier) 能跑完 94 帧；
-        // 一旦加入真实 mebx 元数据轨，进程信号级崩溃（连 Swift catch 都进不去）。
-        // Live Photo 配对的核心是 content.identifier（照片 MakerNote UUID = 视频 moov/meta UUID）
-        // + PhotoKit pairedVideo 同一次提交，still-image-time 不是必需的。
+        // ---- still-image-time 元数据轨（iOS 认实况的必要条件）
+        // 格式描述来自 App 内置的真机样本（轨2），与 append 的 item 严格匹配。
+        var mIn: AVAssetWriterInput?
+        var adaptor: AVAssetWriterInputMetadataAdaptor?
+        if let mf = metaFormat {
+            let mi = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: mf)
+            mi.expectsMediaDataInRealTime = false
+            if writer.canAdd(mi) {
+                writer.add(mi)
+                mIn = mi
+                adaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: mi)
+            } else {
+                Diag.log("警告：写入器不接受元数据轨")
+            }
+        }
 
         // ---- 顶层元数据：配对标识必须与静帧 MakerNote 里的 UUID 完全一致
         //
@@ -127,7 +144,7 @@ enum Passthrough {
 
         // ---- 开跑
         Diag.log("阶段: writer 已建好（video=\(writer.inputs.contains { $0.mediaType == .video })"
-                 + " audio=关 meta=关）")
+                 + " audio=关 meta=\(mIn != nil)）")
 
         guard writer.startWriting() else {
             throw MakeError.msg("启动写入失败：\(writer.error?.localizedDescription ?? "未知")")
@@ -222,6 +239,44 @@ enum Passthrough {
         result.frames = frameCount
         result.audioSamples = 0
         Diag.log("直通完成 · 视频 \(frameCount) 帧 · 无音轨 · " + Mem.summary())
+
+        // ---- 写 still-image-time（真机崩溃点，用 ObjC @try/@catch 兜住）
+        //
+        // 真机崩溃栈：-[AVAssetWriterInputMetadataAdaptor appendTimedMetadataGroup:]
+        // 抛 ObjC 异常 → SIGABRT。Swift 抓不到，必须用 Objective-C 包一层。
+        // append 失败只记日志、不中断——产出可能不被认成实况，但绝不再闪退。
+        if let mi = mIn, let ad = adaptor {
+            let item = AVMutableMetadataItem()
+            item.keySpace = .quickTimeMetadata
+            item.key = "com.apple.quicktime.still-image-time" as NSString
+            item.dataType = "com.apple.quicktime.metadata.datatype.int8"
+            item.value = NSNumber(value: Int8(-1))   // 真机样本值就是 -1
+
+            // 避开 0 秒起点：参考实现用封面时刻，真机样本 sample 也不在 0 点
+            let cover = CMTime(value: 1, timescale: 30)
+            let group = AVTimedMetadataGroup(
+                items: [item],
+                timeRange: CMTimeRange(start: cover, duration: CMTime(value: 1, timescale: 30)))
+
+            var spin = 0
+            while !mi.isReadyForMoreMediaData && spin < 2000 {
+                if writer.status != .writing { break }
+                Thread.sleep(forTimeInterval: 0.005)
+                spin += 1
+            }
+
+            let rc = lpwAppendMetadata(ad, group)
+            if rc == 1 {
+                Diag.log("still-image-time 已写入（guard 成功）")
+            } else if rc == -1 {
+                let reason = lpwLastMetadataError().map { String(cString: $0) } ?? "(unknown)"
+                Diag.log("still-image-time 抛异常（已拦截，不会闪退）：" + reason)
+            } else {
+                Diag.log("still-image-time 追加返回 false：" +
+                         (writer.error?.localizedDescription ?? "无错误描述"))
+            }
+            mi.markAsFinished()
+        }
 
         // ---- 收尾
         progress("封装收尾…")
