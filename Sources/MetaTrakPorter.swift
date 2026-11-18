@@ -14,6 +14,9 @@ enum MetaTrakPorter {
         var tracks: [String] = []
         var sampleBytes = 0
         var outputBytes = 0
+        /// still-image-time 指向的时刻（秒）。静帧画面必须取同一时刻，
+        /// 否则照片内容和实况封面帧对不上。
+        var stillSeconds: Double = 0
     }
 
     enum PortError: LocalizedError {
@@ -222,6 +225,7 @@ enum MetaTrakPorter {
         rep.tracks = ["vide"] + donorOrder
         rep.sampleBytes = mdat2.count
         rep.outputBytes = prefixEnd + mdat2Box.count + newMoov.count
+        rep.stillSeconds = Double(midPts) / 600.0
         return rep
     }
 

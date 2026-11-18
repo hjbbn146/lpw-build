@@ -108,14 +108,26 @@ enum LivePhotoMaker {
         }
 
         // ---- 静帧
+        //
+        // 关键：静帧画面必须取 still-image-time 指向的同一时刻。
+        // 真机实况的封面图就是那条轨指到的那一帧；两者不一致时，
+        // 锁屏静态画面和长按播放的第一帧会跳变，壁纸引擎也更容易判成不可用。
         progress("提取静帧…")
-        let coverTime = CMTime(value: 1, timescale: 30)
+        let coverTime: CMTime
+        if res.stillSeconds > 0.03 {
+            coverTime = CMTime(seconds: res.stillSeconds, preferredTimescale: 600)
+            Diag.log(String(format: "静帧取 %.3fs（与 still-image-time 对齐）", res.stillSeconds))
+        } else {
+            coverTime = CMTime(value: 1, timescale: 30)
+            Diag.log("静帧取 0.033s（移植未给出静帧时刻，退回默认）")
+        }
         let gen = AVAssetImageGenerator(asset: AVURLAsset(url: source,
                                                           options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]))
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = .zero
-        gen.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 30)
-        gen.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 30)
+        // 精确取帧：容差留大会取到相邻帧，画面就和 still-image-time 对不上了
+        gen.requestedTimeToleranceBefore = .zero
+        gen.requestedTimeToleranceAfter = .zero
 
         var cg: CGImage?
         autoreleasepool {

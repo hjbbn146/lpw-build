@@ -28,6 +28,8 @@ enum Passthrough {
         var usedSeconds: Double = 0
         var sourceSeconds: Double = 0
         var metaTracks: [String] = []
+        /// still-image-time 指向的时刻；静帧画面要用同一个时刻
+        var stillSeconds: Double = 0
     }
 
     /// - Parameter metaFormat: 保留参数兼容旧调用方，本版不再使用。
@@ -264,8 +266,10 @@ enum Passthrough {
             do {
                 let rep = try MetaTrakPorter.port(videoURL: outputURL, sampleURL: sampleURL)
                 result.metaTracks = rep.tracks
+                result.stillSeconds = rep.stillSeconds
                 Diag.log("元数据轨移植完成：" + rep.tracks.joined(separator: " + ")
                          + " · 元数据 \(rep.sampleBytes)B"
+                         + " · 静帧时刻 \(String(format: "%.3f", rep.stillSeconds))s"
                          + " · 产物 \(fmtMB(before))MB → \(fmtMB(Double(rep.outputBytes)))MB")
                 progress("实况元数据已补齐（\(rep.tracks.count) 条轨）")
             } catch {
