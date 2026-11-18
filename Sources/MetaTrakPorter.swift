@@ -138,6 +138,25 @@ enum MetaTrakPorter {
                 }
             }
 
+            // 2.5) live-photo-info 的 mdhd duration 钳到视频长度
+            //
+            // 样本这条轨是 3.0 秒；视频被截到 2.9 秒后它反而比画面轨长。
+            // 声明一条比视频还长的元数据轨，在真机上会被判成不一致。
+            if key == "live-photo-info",
+               let mdhd = BoxKit.find(sData, tk, ["mdia", "mdhd"]) {
+                let p = BoxKit.payload(mdhd) - base
+                let ver = t[p]
+                if ver == 0 {
+                    let ts = Int(BoxKit.u32(t, p + 12))
+                    let cur = Int(BoxKit.u32(t, p + 16))
+                    let limit = (ts == 600) ? durTicks : (ts > 0 ? durTicks * ts / 600 : cur)
+                    if limit > 0 && cur > limit {
+                        BoxKit.put32(&t, p + 16, UInt32(limit))
+                        Diag.log("移植：live-photo-info 时长 \(cur) → \(limit)（钳到视频长度）")
+                    }
+                }
+            }
+
             // 3) elst 时长对齐视频：empty edit 超出视频长度会让静帧时刻落空
             if let el = BoxKit.find(sData, tk, ["edts", "elst"]) {
                 let p = BoxKit.payload(el) - base
