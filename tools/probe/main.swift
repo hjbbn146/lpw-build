@@ -469,9 +469,19 @@ if FileManager.default.fileExists(atPath: sampleURL.path) {
         metaTracks += 1
         if let f = t.formatDescriptions.first {
             let fd = f as! CMFormatDescription
-            let ext = CMFormatDescriptionGetExtensions(fd) as? [String: Any] ?? [:]
-            let desc = String(describing: ext)
-            let isSit = desc.contains("still-image-time")
+            var isSit = false
+            if let ext = CMFormatDescriptionGetExtensions(fd) as? [String: Any],
+               let table = ext["MetadataKeyTable"] as? [AnyHashable: Any] {
+                outer: for (_, raw) in table {
+                    guard let entry = raw as? [String: Any] else { continue }
+                    if let v = entry["MetadataKeyValue"] as? Data,
+                       let kstr = String(data: v, encoding: .utf8),
+                       kstr.contains("com.apple.quicktime.still-image-time") {
+                        isSit = true
+                        break outer
+                    }
+                }
+            }
             print("BUNDLED 轨\(metaTracks) isStillImageTime=\(isSit)")
             if isSit && bundledFmt == nil { bundledFmt = fd }
         }

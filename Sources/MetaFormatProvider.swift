@@ -42,6 +42,21 @@ enum MetaFormatProvider {
         return nil
     }
 
+
+    static func isStillImageTimeFormat(_ fd: CMFormatDescription) -> Bool {
+        guard let ext = CMFormatDescriptionGetExtensions(fd) as? [String: Any],
+              let table = ext["MetadataKeyTable"] as? [AnyHashable: Any] else { return false }
+        for (_, raw) in table {
+            guard let entry = raw as? [String: Any] else { continue }
+            if let v = entry["MetadataKeyValue"] as? Data,
+               let s = String(data: v, encoding: .utf8),
+               s.contains("com.apple.quicktime.still-image-time") {
+                return true
+            }
+        }
+        return false
+    }
+
     // MARK: - 主路径：从 App 内置的真机实况样本提取（零权限依赖）
 
     private static func fromBundledSample() -> CMFormatDescription? {
@@ -55,9 +70,7 @@ enum MetaFormatProvider {
         for t in src.tracks(withMediaType: .metadata) {
             guard let anyFmt = t.formatDescriptions.first else { continue }
             let fd = anyFmt as! CMFormatDescription
-            let ext = CMFormatDescriptionGetExtensions(fd) as? [String: Any] ?? [:]
-            let desc = String(describing: ext)
-            if desc.contains("still-image-time") {
+            if isStillImageTimeFormat(fd) {
                 Diag.log("元数据格式：已从内置样本提取 still-image-time 轨")
                 return fd
             }
