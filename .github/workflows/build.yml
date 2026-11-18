@@ -1,0 +1,131 @@
+name: Build LiveWallpaper IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          set -x
+          xcodebuild -version || true
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+          swiftc --version
+
+      # 把「ImageIO 到底认不认 MakerNote」这件事在真实 Apple 平台上跑一遍，
+      # 结果直接决定 STILL 走 HEIC 还是 JPEG 分支。
+      - name: Probe still-image writer on macOS
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          swiftc -O -o probe_macos \
+            Sources/Errors.swift \
+            Sources/Diag.swift \
+            Sources/StillWriter.swift \
+            tools/probe/main.swift
+          ./probe_macos
+
+      - name: Compile app (arm64, iOS 16+)
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          APP=build/Payload/LiveWallpaper.app
+          rm -rf build
+          mkdir -p "$APP"
+
+          xcrun -sdk iphoneos swiftc \
+            -target arm64-apple-ios16.0 \
+            -O \
+            -module-name LiveWallpaper \
+            -o "$APP/LiveWallpaper" \
+            Sources/Errors.swift \
+            Sources/Diag.swift \
+            Sources/Theme.swift \
+            Sources/StillWriter.swift \
+            Sources/LivePhotoMaker.swift \
+            Sources/PhotoSaver.swift \
+            Sources/VideoPicker.swift \
+            Sources/RootViewController.swift \
+            Sources/AppDelegate.swift \
+            Sources/main.swift
+
+          cp Info.plist "$APP/Info.plist"
+          chmod +x "$APP/LiveWallpaper"
+
+      - name: Icons
+        run: |
+          set -euo pipefail
+          APP=build/Payload/LiveWallpaper.app
+          python3 tools/make_icon.py "$APP/AppIcon1024.png" 1024
+          for s in 120 180; do
+            sips -z $s $s "$APP/AppIcon1024.png" --out "$APP/tmp_$s.png" >/dev/null
+          done
+          mv "$APP/tmp_120.png" "$APP/AppIcon60x60@2x.png"
+          mv "$APP/tmp_180.png" "$APP/AppIcon60x60@3x.png"
+          ls -la "$APP"
+
+      - name: Ad-hoc sign
+        run: |
+          set -euo pipefail
+          APP=build/Payload/LiveWallpaper.app
+          codesign --force --sign - --timestamp=none "$APP"
+          echo "--- signature ---"
+          codesign -dv --verbose=4 "$APP" 2>&1 || true
+          codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 || true
+
+      - name: Verify binary
+        run: |
+          set -euo pipefail
+          APP=build/Payload/LiveWallpaper.app
+          EXE="$APP/LiveWallpaper"
+          echo "=== file ==="
+          file "$EXE"
+          echo "=== size ==="
+          ls -la "$EXE"
+          echo "=== linked libs ==="
+          otool -L "$EXE"
+          echo "=== platform ==="
+          vtool -show-build "$EXE" 2>/dev/null || otool -l "$EXE" | grep -A5 LC_BUILD_VERSION || true
+          echo "=== plist ==="
+          plutil -lint "$APP/Info.plist"
+          plutil -p "$APP/Info.plist" | head -40
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          cd build
+          zip -qry ../LiveWallpaper.ipa Payload
+          cd ..
+          ls -la LiveWallpaper.ipa
+          unzip -l LiveWallpaper.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveWallpaper-ipa
+          path: LiveWallpaper.ipa
+          retention-days: 90
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="build-$(date +%Y%m%d-%H%M%S)"
+          gh release create "$TAG" LiveWallpaper.ipa \
+            --title "LiveWallpaper $TAG" \
+            --notes "auto build from ${{ github.sha }}"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
