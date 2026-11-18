@@ -250,15 +250,16 @@ enum Passthrough {
             // appendTimedMetadataGroup 抛异常。改用样本里真实的 item 做模板，
             // key/keySpace/dataType/languageTag 全部照抄，只保留 value。
             let item = AVMutableMetadataItem()
-            if let tpl = MetaFormatProvider.stillImageTimeItemTemplate() {
-                item.key = tpl.key
+            // 从内置样本读真实 item 做模板（内联实现，避免依赖 Photos 模块，
+            // 这样 macOS CI 的 probe 也能编译）。
+            if let tpl = Self.sampleStillImageTimeItem() {
+                item.key = tpl.key as? String
                 item.keySpace = tpl.keySpace
                 item.dataType = tpl.dataType
                 item.extendedLanguageTag = tpl.extendedLanguageTag
                 item.value = tpl.value
                 Diag.log("item 用样本模板：key=\(tpl.key ?? "nil") dataType=\(tpl.dataType ?? "nil")")
             } else {
-                // 兜底：仍用标准写法
                 item.keySpace = .quickTimeMetadata
                 item.key = "com.apple.quicktime.still-image-time" as NSString
                 item.dataType = "com.apple.quicktime.metadata.datatype.int8"
@@ -306,6 +307,38 @@ enum Passthrough {
         }
         Diag.log("封装完成 · 产物 \(fmtMB(fileBytes(outputURL)))MB · " + Mem.summary())
         return result
+    }
+
+    /// 从内置样本读 still-image-time 的真实 AVMetadataItem 做模板。
+    /// 内联在这里而不是 MetaFormatProvider，避免引入 Photos 依赖（CI probe 要能编译）。
+    static func sampleStillImageTimeItem() -> AVMetadataItem? {
+        let url: URL
+        if let bundled = Bundle.main.url(forResource: "sample_live", withExtension: "mov") {
+            url = bundled
+        } else {
+            // CI probe 用当前目录读
+            url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("Resources/sample_live.mov")
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let asset = AVURLAsset(url: url)
+        for t in asset.tracks(withMediaType: .metadata) {
+            guard let reader = try? AVAssetReader(asset: asset) else { continue }
+            let out = AVAssetReaderTrackOutput(track: t, outputSettings: nil)
+            out.alwaysCopiesSampleData = true
+            guard reader.canAdd(out) else { continue }
+            reader.add(out)
+            guard reader.startReading() else { continue }
+            while let sb = out.copyNextSampleBuffer(),
+                  let groups = try? sb.metadataGroups(),
+                  let g = groups.first,
+                  let real = g.items.first,
+                  let k = real.key as? String,
+                  k.contains("still-image-time") {
+                return real
+            }
+        }
+        return nil
     }
 
     // MARK: - 小工具
