@@ -70,16 +70,14 @@ enum LivePhotoMaker {
         let photoBase = "live_\(stamp)"
         let identifier = UUID().uuidString
 
-        // still-image-time 的格式描述必须从系统自己的实况照片里取，
-        // API 构造在 iOS 26 上必定回 -12710（已实测六种组合）
-        guard let mf = makeStillImageTimeFormat() else {
-            throw MakeError.msg("拿不到 still-image-time 元数据格式。\n"
-                                + "需要相册「完全访问」权限，并且相册里至少有一张实况照片作样本"
-                                + "（相机默认就是实况，随便拍一张即可）。\n"
-                                + "路径：设置 → 隐私与安全性 → 照片 → 无损实况 → 完全访问")
+        // v3.0：不再从相册里找 still-image-time 的格式描述。
+        // 那条路在 iOS 26/27 上走不通（-12710 + append 抛 ObjC 异常），
+        // 现在改成把内置真机样本的三条元数据轨整条 box 级搬过来。
+        guard let sampleURL = Bundle.main.url(forResource: "sample_live", withExtension: "mov") else {
+            throw MakeError.msg("App 内置的实况样本丢失（sample_live.mov），请重装应用")
         }
 
-        // ---- 零重编码直通（视频 + 音频 + 元数据三轨交错写入）
+        // ---- 零重编码直通 + 元数据轨移植
         //
         // 带音轨失败时自动降级成纯视频再试一次：实况照片没有声音也照样能用，
         // 总比整个流程失败好。真机上音频轨是最容易把 writer 卡住的变量。
@@ -89,8 +87,9 @@ enum LivePhotoMaker {
                                           outputURL: videoURL,
                                           maxSeconds: maxSeconds,
                                           keepAudio: keepAudio,
-                                          metaFormat: mf,
+                                          metaFormat: nil,
                                           identifier: identifier,
+                                          sampleURL: sampleURL,
                                           progress: progress)
         } catch {
             guard keepAudio else { throw error }
@@ -102,8 +101,9 @@ enum LivePhotoMaker {
                                           outputURL: videoURL,
                                           maxSeconds: maxSeconds,
                                           keepAudio: false,
-                                          metaFormat: mf,
+                                          metaFormat: nil,
                                           identifier: identifier,
+                                          sampleURL: sampleURL,
                                           progress: progress)
         }
 

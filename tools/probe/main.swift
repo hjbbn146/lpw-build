@@ -491,26 +491,33 @@ if FileManager.default.fileExists(atPath: sampleURL.path) {
     print("BUNDLED 样本文件不存在: \(sampleURL.path)")
 }
 
-if let bf = bundledFmt {
-    let bout = cDir.appendingPathComponent("bundled_out.mov")
-    do {
-        let r = try Passthrough.convert(source: rawVideo, outputURL: bout, maxSeconds: 3.0,
-                                        keepAudio: false, metaFormat: bf,
-                                        identifier: "BUNDLED-TEST", progress: { _ in })
-        let oa = AVURLAsset(url: bout)
-        let mt = oa.tracks(withMediaType: .metadata).count
-        let data = (try? Data(contentsOf: bout)) ?? Data()
-        let sit = data.range(of: Data("still-image-time".utf8)) != nil
-        let uuid = data.range(of: Data("BUNDLED-TEST".utf8)) != nil
-        print("BUNDLED convert OK frames=\(r.frames) metadata轨=\(mt) sit=\(sit) uuid=\(uuid)")
-        bundledOK = r.frames > 0 && mt > 0 && sit
-    } catch {
-        print("BUNDLED convert FAIL: \(error.localizedDescription)")
-    }
-} else {
-    print("BUNDLED 跳过（取不到格式描述）")
+// ---- v3.0 核心路径：box 级元数据轨移植（不再依赖 bundledFmt）
+let bout = cDir.appendingPathComponent("bundled_out.mov")
+do {
+    let r = try Passthrough.convert(source: rawVideo, outputURL: bout, maxSeconds: 3.0,
+                                    keepAudio: false, metaFormat: nil,
+                                    identifier: "BUNDLED-TEST",
+                                    sampleURL: sampleURL,
+                                    progress: { _ in })
+    let oa = AVURLAsset(url: bout)
+    let mt = oa.tracks(withMediaType: .metadata).count
+    let vt = oa.tracks(withMediaType: .video).count
+    let data = (try? Data(contentsOf: bout)) ?? Data()
+    let sit = data.range(of: Data("still-image-time".utf8)) != nil
+    let lpi = data.range(of: Data("live-photo-info".utf8)) != nil
+    let ori = data.range(of: Data("video-orientation".utf8)) != nil
+    let uuid = data.range(of: Data("BUNDLED-TEST".utf8)) != nil
+    let mebx = data.range(of: Data("mebx".utf8)) != nil
+    print("PORTER convert OK frames=\(r.frames) video轨=\(vt) metadata轨=\(mt)")
+    print("PORTER mebx=\(mebx) sit=\(sit) lpi=\(lpi) ori=\(ori) uuid=\(uuid)")
+    print("PORTER 移植轨: " + r.metaTracks.joined(separator: "+"))
+    // AVURLAsset 未必把 mebx 轨算进 .metadata，所以以二进制里的 key 字符串为准
+    bundledOK = r.frames > 0 && sit && lpi && ori && uuid
+    print("PORTER 轨道识别: mt>=3? \(mt >= 3)（仅供参考，mebx 不计入时会是 0）")
+} catch {
+    print("PORTER convert FAIL: \(error.localizedDescription)")
 }
-print(bundledOK ? "BUNDLED PASS" : "BUNDLED 未通过")
+print(bundledOK ? "PORTER PASS" : "PORTER 未通过")
 
 
 // ---- E. 从样本 still-image-time 轨读出真实的 AVMetadataItem 参数

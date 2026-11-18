@@ -4,6 +4,7 @@ import base64
 import json
 import pathlib
 import subprocess
+import time
 import sys
 
 OWNER = "hjbbn146"
@@ -26,7 +27,7 @@ TOK = token()
 
 
 def call(method: str, path: str, payload=None, raw=False):
-    cmd = ["curl", "-sSL", "--noproxy", "*", "--max-time", "90",
+    cmd = ["curl", "-sSL",  "--max-time", "90",
            "-X", method,
            "-H", f"Authorization: token {TOK}",
            "-H", "Accept: application/vnd.github+json",
@@ -44,8 +45,17 @@ def call(method: str, path: str, payload=None, raw=False):
             raise RuntimeError(f"curl rc={p.returncode}: {p.stderr[:200]}")
         return None
     cmd.append(API + path)
-    p = subprocess.run(cmd, input=data, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+    # 走本地代理时常被 502 打断，重试几轮再放弃
+    last = None
+    for attempt in range(6):
+        p = subprocess.run(cmd, input=data, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        if p.returncode == 0:
+            last = p
+            break
+        last = p
+        time.sleep(1.2 * (attempt + 1))
+    p = last
     if p.returncode != 0:
         raise RuntimeError(f"curl rc={p.returncode}: {p.stderr[:200]}")
     if not p.stdout.strip():
@@ -59,7 +69,7 @@ def call(method: str, path: str, payload=None, raw=False):
 
 def curl_raw(url: str, dest: pathlib.Path):
     """带 token 下载二进制（artifact / 日志）。"""
-    cmd = ["curl", "-sSL", "--noproxy", "*", "--retry", "4", "--retry-delay", "3",
+    cmd = ["curl", "-sSL",  "--retry", "4", "--retry-delay", "3",
            "--max-time", "180", "-H", f"Authorization: token {TOK}",
            "-H", "Accept: application/vnd.github+json",
            "-H", "X-GitHub-Api-Version: 2022-11-28",
@@ -125,7 +135,7 @@ def push(root: pathlib.Path, message: str):
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "scopes":
-        p = subprocess.run(["curl", "-sSI", "--noproxy", "*", "-H", f"Authorization: token {TOK}",
+        p = subprocess.run(["curl", "-sSI",  "-H", f"Authorization: token {TOK}",
                             "https://api.github.com/user"], capture_output=True, text=True)
         for line in p.stdout.splitlines():
             if line.lower().startswith(("x-oauth-scopes", "x-accepted")):

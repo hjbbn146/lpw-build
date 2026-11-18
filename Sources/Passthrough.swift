@@ -27,16 +27,19 @@ enum Passthrough {
         var identifier = ""
         var usedSeconds: Double = 0
         var sourceSeconds: Double = 0
+        var metaTracks: [String] = []
     }
 
-    /// - Parameter metaFormat: still-image-time 轨的格式描述。
-    ///   传 nil 则跳过该轨（CI 测试用；App 里必须传，否则相册不认实况）。
+    /// - Parameter metaFormat: 保留参数兼容旧调用方，本版不再使用。
+    /// - Parameter sampleURL: 真机原生实况样本。收尾后靠它把 3 条元数据轨
+    ///   box 级移植进产物；传 nil 则只出纯视频（CI 单测用）。
     static func convert(source: URL,
                         outputURL: URL,
                         maxSeconds: Double,
                         keepAudio: Bool,          // 保留参数兼容调用方；本版忽略，强制无音轨
-                        metaFormat: CMFormatDescription?,   // v2.7 忽略：不写元数据轨
+                        metaFormat: CMFormatDescription?,   // v3.0 忽略：元数据轨改走 box 移植
                         identifier: String,
+                        sampleURL: URL? = nil,
                         progress: @escaping (String) -> Void) throws -> Result {
 
         _ = keepAudio
@@ -110,21 +113,16 @@ enum Passthrough {
         }
         writer.add(vIn)
 
-        // ---- still-image-time 元数据轨（iOS 认实况的必要条件）
-        // 格式描述来自 App 内置的真机样本（轨2），与 append 的 item 严格匹配。
-        var mIn: AVAssetWriterInput?
-        var adaptor: AVAssetWriterInputMetadataAdaptor?
-        if let mf = metaFormat {
-            let mi = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: mf)
-            mi.expectsMediaDataInRealTime = false
-            if writer.canAdd(mi) {
-                writer.add(mi)
-                mIn = mi
-                adaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: mi)
-            } else {
-                Diag.log("警告：写入器不接受元数据轨")
-            }
-        }
+        // ---- 元数据轨为什么不在这里写
+        //
+        // iOS 26/27 上 CMMetadataFormatDescriptionCreateWithMetadataSpecifications
+        // 对所有 spec 组合恒定返回 -12710，没法凭空造 still-image-time 的格式描述；
+        // 而 appendTimedMetadataGroup: 在真机上会直接抛 ObjC 异常（崩溃栈已确认）。
+        // v2.x 用 @try/@catch 兜住不崩了，但那条轨始终没真正写进文件 ——
+        // 真机导出的 MOV 只有一条 vide 轨，所以相册里「实况」按钮一直是灰的。
+        //
+        // v3.0 改成封装收尾后做 box 级移植（MetaTrakPorter）：
+        // 把内置真机样本的三条 mebx 轨整条搬过来，字节级一致，绕开整个 API 坑。
 
         // ---- 顶层元数据：配对标识必须与静帧 MakerNote 里的 UUID 完全一致
         //
@@ -144,7 +142,7 @@ enum Passthrough {
 
         // ---- 开跑
         Diag.log("阶段: writer 已建好（video=\(writer.inputs.contains { $0.mediaType == .video })"
-                 + " audio=关 meta=\(mIn != nil)）")
+                 + " audio=关 元数据=收尾后 box 移植）")
 
         guard writer.startWriting() else {
             throw MakeError.msg("启动写入失败：\(writer.error?.localizedDescription ?? "未知")")
@@ -240,73 +238,6 @@ enum Passthrough {
         result.audioSamples = 0
         Diag.log("直通完成 · 视频 \(frameCount) 帧 · 无音轨 · " + Mem.summary())
 
-        // ---- 写 still-image-time（真机崩溃点，用 ObjC @try/@catch 兜住）
-        //
-        // 真机崩溃栈：-[AVAssetWriterInputMetadataAdaptor appendTimedMetadataGroup:]
-        // 抛 ObjC 异常 → SIGABRT。Swift 抓不到，必须用 Objective-C 包一层。
-        // append 失败只记日志、不中断——产出可能不被认成实况，但绝不再闪退。
-        if let mi = mIn, let ad = adaptor {
-            // 关键（真机日志证明）：硬编码 dataType 与格式描述声明的不匹配 →
-            // appendTimedMetadataGroup 抛异常。改用样本里真实的 item 做模板，
-            // key/keySpace/dataType/languageTag 全部照抄，只保留 value。
-            let item = AVMutableMetadataItem()
-            item.keySpace = .quickTimeMetadata
-            item.key = "com.apple.quicktime.still-image-time" as NSString
-            item.value = NSNumber(value: Int8(-1))
-            // dataType 必须从「写进 writer 的那个格式描述」里读出来，
-            // 硬编码 int8 与样本格式描述声明的不一致 → append 抛异常（真机日志证实）。
-            if let mf = metaFormat,
-               let ext = CMFormatDescriptionGetExtensions(mf) as? [String: Any],
-               let table = ext["MetadataKeyTable"] as? [AnyHashable: Any] {
-                var found: String?
-                for (_, raw) in table {
-                    guard let e = raw as? [String: Any],
-                          let dt = e["MetadataKeyValue"] as? Data,
-                          let ks = String(data: dt, encoding: .utf8),
-                          ks.contains("still-image-time"),
-                          let dtData = e["MetadataKeyDataType"] as? Data,
-                          let dtStr0 = String(data: dtData, encoding: .utf8) else { continue }
-                    let dtStr = dtStr0.trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
-                    found = dtStr
-                    break
-                }
-                if let dtStr = found {
-                    item.dataType = dtStr
-                    Diag.log("item dataType 取自格式描述：\(dtStr)")
-                } else {
-                    item.dataType = "com.apple.quicktime.metadata.datatype.int8"
-                    Diag.log("警告：格式描述里没读到 dataType，退回 int8")
-                }
-            } else {
-                item.dataType = "com.apple.quicktime.metadata.datatype.int8"
-            }
-
-            // 用真实样本里该 sample 的时间点，避免 0 点或猜的时间
-            let cover = CMTime(value: 1, timescale: 30)
-            let group = AVTimedMetadataGroup(
-                items: [item],
-                timeRange: CMTimeRange(start: cover, duration: CMTime(value: 1, timescale: 30)))
-
-            var spin = 0
-            while !mi.isReadyForMoreMediaData && spin < 2000 {
-                if writer.status != .writing { break }
-                Thread.sleep(forTimeInterval: 0.005)
-                spin += 1
-            }
-
-            let rc = lpwAppendMetadata(ad, group)
-            if rc == 1 {
-                Diag.log("still-image-time 已写入（guard 成功）")
-            } else if rc == -1 {
-                let reason = lpwLastMetadataError().map { String(cString: $0) } ?? "(unknown)"
-                Diag.log("still-image-time 抛异常（已拦截，不会闪退）：" + reason)
-            } else {
-                Diag.log("still-image-time 追加返回 false：" +
-                         (writer.error?.localizedDescription ?? "无错误描述"))
-            }
-            mi.markAsFinished()
-        }
-
         // ---- 收尾
         progress("封装收尾…")
         Diag.log("阶段: 开始 finishWriting")
@@ -320,6 +251,30 @@ enum Passthrough {
             throw MakeError.msg("收尾失败：\(writer.error?.localizedDescription ?? "状态 \(writer.status.rawValue)")")
         }
         Diag.log("封装完成 · 产物 \(fmtMB(fileBytes(outputURL)))MB · " + Mem.summary())
+
+        // ---- 实况元数据轨：box 级移植（v3.0 的核心修复）
+        //
+        // 到这里产物只有一条 vide 轨 + moov/meta(content.identifier)。
+        // 相册要把它认成实况照片，还必须有 live-photo-info / still-image-time /
+        // video-orientation 三条 mebx 轨 —— 这三条整条从内置真机样本搬过来，
+        // 视频 mdat 一个字节都不动。
+        if let sampleURL {
+            progress("补齐实况元数据…")
+            let before = fileBytes(outputURL)
+            do {
+                let rep = try MetaTrakPorter.port(videoURL: outputURL, sampleURL: sampleURL)
+                result.metaTracks = rep.tracks
+                Diag.log("元数据轨移植完成：" + rep.tracks.joined(separator: " + ")
+                         + " · 元数据 \(rep.sampleBytes)B"
+                         + " · 产物 \(fmtMB(before))MB → \(fmtMB(Double(rep.outputBytes)))MB")
+                progress("实况元数据已补齐（\(rep.tracks.count) 条轨）")
+            } catch {
+                Diag.log("元数据轨移植失败：" + error.localizedDescription)
+                throw MakeError.msg("补齐实况元数据失败：" + error.localizedDescription)
+            }
+        } else {
+            Diag.log("警告：没有传入真机样本，跳过了元数据轨移植（产物不会是实况照片）")
+        }
         return result
     }
 

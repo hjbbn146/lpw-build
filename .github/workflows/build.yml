@@ -38,6 +38,8 @@ jobs:
             Sources/Diag.swift \
             Sources/Memory.swift \
             Sources/StillWriter.swift \
+            Sources/BoxKit.swift \
+            Sources/MetaTrakPorter.swift \
             Sources/Passthrough.swift \
             tools/probe/main.swift > probe.txt 2>&1
           if [ -x ./probe_macos ]; then
@@ -71,6 +73,8 @@ jobs:
             Sources/StillWriter.swift \
             Sources/Memory.swift \
             Sources/CrashCatcher.swift \
+            Sources/BoxKit.swift \
+            Sources/MetaTrakPorter.swift \
             Sources/Passthrough.swift \
             Sources/SelfTest.swift \
             Sources/MetaFormatProvider.swift \
@@ -82,8 +86,9 @@ jobs:
             Sources/main.swift
 
           cp Info.plist "$APP/Info.plist"
-          # 内置真机实况样本：still-image-time 的 mebx 格式描述从这里取，
-          # 不再依赖相册读取权限（iOS 27 重签环境下那一步会闪退）
+          # 内置真机实况样本：v3.0 起它是元数据轨的供体——
+          # live-photo-info / still-image-time / video-orientation 三条 mebx 轨
+          # 整条从它身上搬到产物里，字节级一致。
           cp Resources/sample_live.mov "$APP/sample_live.mov"
           chmod +x "$APP/LiveWallpaper"
 

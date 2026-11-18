@@ -38,15 +38,24 @@ enum SelfTest {
 
             log("① 环境 · iOS \(UIDevice.current.systemVersion) · " + Mem.summary())
 
-            // ---- ② 相册权限 + still-image-time 格式描述
-            log("② 从相册取 still-image-time 格式…")
-            let mf = MetaFormatProvider.stillImageTime()
-            if mf == nil {
-                log("   ✗ 拿不到。相册需「完全访问」，且相册里要有一张实况照片")
-                end("自检中断：缺元数据格式")
+            // ---- ② 内置真机样本（元数据轨的供体）
+            log("② 检查内置实况样本…")
+            guard let sampleURL = Bundle.main.url(forResource: "sample_live", withExtension: "mov") else {
+                log("   ✗ sample_live.mov 不在 App 包里，重装应用")
+                end("自检中断：缺内置样本")
                 return
             }
-            log("   ✓ 拿到")
+            let sData = (try? Data(contentsOf: sampleURL)) ?? Data()
+            let sTxt = String(decoding: [UInt8](sData.prefix(1_000_000)), as: UTF8.self)
+            let hasLpi = sTxt.contains("live-photo-info")
+            let hasSit = sTxt.contains("still-image-time")
+            let hasOri = sTxt.contains("video-orientation")
+            log("   \(hasLpi && hasSit && hasOri ? "✓" : "✗") 样本 \(sData.count / 1024)KB"
+                + " · live-photo-info=\(hasLpi) still-image-time=\(hasSit) orientation=\(hasOri)")
+            if !(hasLpi && hasSit && hasOri) {
+                end("自检中断：内置样本不完整")
+                return
+            }
 
             // ---- ③ 自造测试视频
             let dir = FileManager.default.temporaryDirectory
@@ -63,17 +72,18 @@ enum SelfTest {
             }
             log("   ✓ " + String(format: "%.2f MB", Passthrough.fileBytes(src) / 1_048_576))
 
-            // ---- ④ 零重编码直通（带元数据轨）
-            log("④ 直通（视频 + 元数据两轨）…")
+            // ---- ④ 零重编码直通 + 元数据轨 box 移植
+            log("④ 直通 + 元数据轨移植…")
             do {
                 let r = try Passthrough.convert(source: src,
                                                 outputURL: dst,
                                                 maxSeconds: 2.0,
                                                 keepAudio: false,
-                                                metaFormat: mf,
+                                                metaFormat: nil,
                                                 identifier: "SELFTEST-0001",
+                                                sampleURL: sampleURL,
                                                 progress: { p in log("   " + p) })
-                log("   ✓ \(r.frames) 帧")
+                log("   ✓ \(r.frames) 帧 · 轨 " + r.metaTracks.joined(separator: "+"))
             } catch {
                 log("   ✗ " + error.localizedDescription)
                 end("自检中断：直通失败")
@@ -90,11 +100,15 @@ enum SelfTest {
                 if ((m.key as? String) ?? "").contains("content.identifier") { hasId = true }
             }
             let data = (try? Data(contentsOf: dst)) ?? Data()
-            let mebx = data.range(of: Data("mebx".utf8)) != nil
-            let sit = data.range(of: Data("still-image-time".utf8)) != nil
-            log("   video=\(vt) metadata=\(mt) identifier=\(hasId) mebx=\(mebx) sit=\(sit)")
+            let txt = String(decoding: [UInt8](data), as: UTF8.self)
+            let mebx = txt.contains("mebx")
+            let sit = txt.contains("still-image-time")
+            let lpi = txt.contains("live-photo-info")
+            let ori = txt.contains("video-orientation")
+            log("   video=\(vt) metadata=\(mt) identifier=\(hasId)")
+            log("   mebx=\(mebx) still-image-time=\(sit) live-photo-info=\(lpi) orientation=\(ori)")
 
-            let ok = vt > 0 && mt > 0 && hasId && mebx && sit
+            let ok = vt > 0 && mt >= 3 && hasId && mebx && sit && lpi && ori
             log(ok ? "✅ 自检全部通过" : "⚠️ 结构不完整，见上")
             end(ok ? "✅ 自检通过：环境正常，问题只在具体视频或业务分支"
                    : "⚠️ 自检未全通过，把日志发开发者")
