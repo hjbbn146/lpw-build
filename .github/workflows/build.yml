@@ -73,6 +73,9 @@ jobs:
             Sources/main.swift
 
           cp Info.plist "$APP/Info.plist"
+          # 内置真机实况样本：still-image-time 的 mebx 格式描述从这里取，
+          # 不再依赖相册读取权限（iOS 27 重签环境下那一步会闪退）
+          cp Resources/sample_live.mov "$APP/sample_live.mov"
           chmod +x "$APP/LiveWallpaper"
 
       - name: Icons

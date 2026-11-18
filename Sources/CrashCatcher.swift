@@ -117,14 +117,11 @@ enum CrashCatcher {
             }
         }
 
+        // 只保留 ObjC 异常捕获（在异常上下文，堆还健在，安全）。
+        // 刻意不装 signal handler：backtrace_symbols_fd 内部会 malloc，
+        // 在信号上下文里不是 async-signal-safe，会二次崩溃 / 死锁，
+        // 反而把「本来能靠异常捕获记下来的现场」一起毁掉。
         NSSetUncaughtExceptionHandler(crashException)
-
-        signal(SIGABRT, crashSignalABRT)
-        signal(SIGSEGV, crashSignalSEGV)
-        signal(SIGBUS, crashSignalBUS)
-        signal(SIGILL, crashSignalILL)
-        signal(SIGFPE, crashSignalFPE)
-        signal(SIGTRAP, crashSignalTRAP)
     }
 
     static func readAll() -> String {

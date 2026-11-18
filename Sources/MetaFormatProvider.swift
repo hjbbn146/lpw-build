@@ -22,6 +22,15 @@ enum MetaFormatProvider {
         defer { lock.unlock() }
         if let c = cache { return c }
 
+        // 优先级调整（v2.6）：内置真机样本 → 相册 → API 构造。
+        // 内置样本是从相机实况照片直接导出的 .mov，里面的 mebx 轨格式描述
+        // 由系统自己写入，一定被认可，而且完全不碰相册权限。
+        // 旧版先走相册 + 同步 semaphore 等授权，在 iOS 27 / 重签环境下
+        // 可能直接崩，这是「点生成立刻闪退」的重点嫌疑之一。
+        if let f = fromBundledSample() {
+            cache = f
+            return f
+        }
         if let f = fromLibrary() {
             cache = f
             return f
@@ -30,6 +39,25 @@ enum MetaFormatProvider {
             cache = f
             return f
         }
+        return nil
+    }
+
+    // MARK: - 主路径：从 App 内置的真机实况样本提取（零权限依赖）
+
+    private static func fromBundledSample() -> CMFormatDescription? {
+        guard let url = Bundle.main.url(forResource: "sample_live", withExtension: "mov") else {
+            Diag.log("元数据格式：内置样本缺失")
+            return nil
+        }
+        let src = AVURLAsset(url: url)
+        for t in src.tracks(withMediaType: .metadata) {
+            guard let anyFmt = t.formatDescriptions.first else { continue }
+            let fd = anyFmt as! CMFormatDescription
+            let ext = CMFormatDescriptionGetExtensions(fd) as? [String: Any] ?? [:]
+            Diag.log("元数据格式：已从内置样本提取 extensions=\(ext)")
+            return fd
+        }
+        Diag.log("元数据格式：内置样本里没有元数据轨")
         return nil
     }
 
