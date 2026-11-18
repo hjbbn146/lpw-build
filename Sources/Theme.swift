@@ -4,6 +4,8 @@ import UIKit
 /// 全部使用系统语义色：浅色 / 深色 / 提高对比度模式都自动正确。
 enum Theme {
     static let bg         = UIColor.systemGroupedBackground
+    /// 兼容旧调用名
+    static let background = bg
     static let card       = UIColor.secondarySystemGroupedBackground
     static let cardInner  = UIColor.tertiarySystemGroupedBackground
     static let accent     = UIColor.systemBlue
