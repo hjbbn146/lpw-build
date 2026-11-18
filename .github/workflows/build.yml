@@ -38,6 +38,7 @@ jobs:
             Sources/Diag.swift \
             Sources/Memory.swift \
             Sources/StillWriter.swift \
+            Sources/HeicExifInjector.swift \
             Sources/BoxKit.swift \
             Sources/MetaTrakPorter.swift \
             Sources/Passthrough.swift \
@@ -71,6 +72,7 @@ jobs:
             Sources/Diag.swift \
             Sources/Theme.swift \
             Sources/StillWriter.swift \
+            Sources/HeicExifInjector.swift \
             Sources/Memory.swift \
             Sources/CrashCatcher.swift \
             Sources/BoxKit.swift \

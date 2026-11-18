@@ -1,6 +1,13 @@
 import UIKit
 import Photos
 
+/// iOS 原生 inset-grouped 风格的主界面。
+///
+/// 版面纪律（这几条是硬要求，别改）：
+///   1. content 必须和 scroll 的 frameLayoutGuide 等宽（左右各 16）。
+///      少了这条约束，结果文本一长就把整页撑宽，看起来像「整个画面被放大了」。
+///   2. 所有长文本 label 的 numberOfLines = 0，不许截断。
+///   3. 字体走 Theme.font（descriptor 锁死），不跟随动态字体。
 final class RootViewController: UIViewController {
 
     // MARK: - 状态
@@ -15,25 +22,24 @@ final class RootViewController: UIViewController {
     private let scroll = UIScrollView()
     private let content = UIStackView()
 
-    private let fileLabel = Ctl.label("尚未选择视频", size: 12.5, color: Theme.faint, lines: 2)
-    private let pickButton = Ctl.button("从相册选择视频", bg: Theme.accent, fg: Theme.onAccent, height: 50)
+    private let pickRow = UIButton(type: .custom)
+    private let fileLabel = Ctl.label("尚未选择视频", size: 13, color: Theme.faint)
 
     private var infoValues: [UILabel] = []
 
     private let seg = UISegmentedControl(items: ["3 秒", "5 秒", "保留全长"])
     private let audioSwitch = UISwitch()
 
-    private let genButton = Ctl.button("生成实况壁纸", bg: Theme.accent, fg: Theme.onAccent, height: 56, size: 17)
+    private let genButton = Ctl.filledButton("生成实况壁纸", height: 50)
 
     private let spinner = UIActivityIndicatorView(style: .medium)
-    private let statusLabel = Ctl.label("", size: 12.5, color: Theme.sub, lines: 4)
+    private let statusLabel = Ctl.label("", size: 13, color: Theme.sub)
 
-    private let resultLabel = Ctl.label("尚未生成", size: 13, color: Theme.sub, lines: 3)
-    private let openPhotosButton = Ctl.button("打开相册", bg: Theme.cardInner, fg: Theme.text, height: 42, size: 14)
-    private let selfTestButton = Ctl.button("环境自检（点一次就知道问题在哪）",
-                                            bg: Theme.cardInner, fg: Theme.accent, height: 42, size: 14)
+    private let resultLabel = Ctl.label("尚未生成", size: 13.5, color: Theme.sub)
+    private let openPhotosButton = Ctl.tintedButton("打开相册")
+    private let selfTestButton = Ctl.tintedButton("环境自检")
 
-    private let logLabel = Ctl.label("", size: 10, color: Theme.faint, lines: 9, mono: true)
+    private let logLabel = Ctl.label("", size: 10.5, color: Theme.faint, lines: 10)
     private var logLines: [String] = []
 
     // MARK: - 生命周期
@@ -41,7 +47,7 @@ final class RootViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         Diag.mark("rootVC:viewDidLoad")
-        buildBackground()
+        view.backgroundColor = Theme.bg
         buildLayout()
         wireActions()
         observeLog()
@@ -50,34 +56,8 @@ final class RootViewController: UIViewController {
         Diag.mark("rootVC:laidOut")
     }
 
-    // MARK: - 背景
-
-    private func buildBackground() {
-        // 纯色背景，跟随系统浅色 / 深色（浅色模式就是纯白）
-        view.backgroundColor = Theme.background
-        scroll.backgroundColor = .clear
-    }
-
-    // 状态栏文字跟着模式反色，避免白底上出现白字
     override var preferredStatusBarStyle: UIStatusBarStyle {
         traitCollection.userInterfaceStyle == .dark ? .lightContent : .darkContent
-    }
-
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-        if previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle {
-            setNeedsStatusBarAppearanceUpdate()
-            view.backgroundColor = Theme.background
-            applySegmentStyle()
-        }
-    }
-
-    private func applySegmentStyle() {
-        seg.selectedSegmentTintColor = Theme.accent
-        seg.setTitleTextAttributes([.foregroundColor: Theme.onAccent,
-                                    .font: Theme.font(13, .semibold)], for: .selected)
-        seg.setTitleTextAttributes([.foregroundColor: Theme.sub,
-                                    .font: Theme.font(13, .medium)], for: .normal)
     }
 
     // MARK: - 布局
@@ -85,11 +65,9 @@ final class RootViewController: UIViewController {
     private func buildLayout() {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.showsVerticalScrollIndicator = false
-        // 版面固定：内容不满一屏时不许上下拖动、不许橡皮筋回弹，
-        // 否则整页会像网页一样被拽来拽去（内容超一屏时仍可正常滚动）
         scroll.alwaysBounceVertical = false
         scroll.bounces = false
-        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.backgroundColor = .clear
         view.addSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -99,178 +77,254 @@ final class RootViewController: UIViewController {
         ])
 
         content.axis = .vertical
-        content.spacing = 14
+        content.spacing = 0
         content.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(content)
         NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 10),
-            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 18),
-            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -18),
-            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -30)
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -16),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -28),
+            // ★ 这一条是「画面变大」的根治：内容宽度必须锁死成视口宽度
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32)
         ])
 
-        // 标题
-        let titleRow = UIStackView()
-        titleRow.axis = .vertical
-        titleRow.spacing = 4
-        titleRow.addArrangedSubview(Ctl.label("无损实况", size: 30, weight: .bold, color: Theme.text))
-        titleRow.addArrangedSubview(Ctl.label("视频 → 锁屏实况 · 零重编码直通", size: 13, color: Theme.sub))
-        titleRow.setCustomSpacing(0, after: titleRow.arrangedSubviews[0])
-        content.addArrangedSubview(titleRow)
-        content.setCustomSpacing(18, after: titleRow)
+        // ---- 大标题
+        let title = Ctl.label("无损实况", size: 34, weight: .bold, color: Theme.text)
+        let subtitle = Ctl.label("视频转锁屏实况 · 画质零损失", size: 15, color: Theme.sub)
+        content.addArrangedSubview(title)
+        content.setCustomSpacing(4, after: title)
+        content.addArrangedSubview(subtitle)
+        content.setCustomSpacing(22, after: subtitle)
 
-        // 卡片 1：选视频
-        let (card1, s1) = cardBox("第 1 步 · 选择视频")
-        s1.addArrangedSubview(pickButton)
-        s1.addArrangedSubview(fileLabel)
-        content.addArrangedSubview(card1)
+        // ---- 视频
+        content.addArrangedSubview(Ctl.sectionHeader("视频"))
+        content.setCustomSpacing(7, after: content.arrangedSubviews.last!)
 
-        // 卡片 2：视频信息
-        let (card2, s2) = cardBox("视频信息")
-        s2.addArrangedSubview(makeInfoGrid())
-        content.addArrangedSubview(card2)
+        let videoCard = Ctl.card()
+        let videoStack = UIStackView()
+        videoStack.axis = .vertical
+        videoStack.spacing = 0
+        videoStack.translatesAutoresizingMaskIntoConstraints = false
+        videoCard.addSubview(videoStack)
+        NSLayoutConstraint.activate([
+            videoStack.topAnchor.constraint(equalTo: videoCard.topAnchor),
+            videoStack.leadingAnchor.constraint(equalTo: videoCard.leadingAnchor),
+            videoStack.trailingAnchor.constraint(equalTo: videoCard.trailingAnchor),
+            videoStack.bottomAnchor.constraint(equalTo: videoCard.bottomAnchor)
+        ])
 
-        // 卡片 3：输出设置
-        let (card3, s3) = cardBox("输出设置")
+        buildPickRow()
+        videoStack.addArrangedSubview(pickRow)
+        videoStack.addArrangedSubview(insetSeparator())
+        videoStack.addArrangedSubview(fileRow())
+        videoStack.addArrangedSubview(insetSeparator())
+        videoStack.addArrangedSubview(infoRows())
+        content.addArrangedSubview(videoCard)
+        content.setCustomSpacing(22, after: videoCard)
+
+        // ---- 输出设置
+        content.addArrangedSubview(Ctl.sectionHeader("输出设置"))
+        content.setCustomSpacing(7, after: content.arrangedSubviews.last!)
+
+        let outCard = Ctl.card()
+        let outStack = UIStackView()
+        outStack.axis = .vertical
+        outStack.spacing = 0
+        outStack.translatesAutoresizingMaskIntoConstraints = false
+        outCard.addSubview(outStack)
+        NSLayoutConstraint.activate([
+            outStack.topAnchor.constraint(equalTo: outCard.topAnchor),
+            outStack.leadingAnchor.constraint(equalTo: outCard.leadingAnchor),
+            outStack.trailingAnchor.constraint(equalTo: outCard.trailingAnchor),
+            outStack.bottomAnchor.constraint(equalTo: outCard.bottomAnchor)
+        ])
+
         seg.selectedSegmentIndex = 0
         applySegmentStyle()
         seg.translatesAutoresizingMaskIntoConstraints = false
-        seg.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        s3.addArrangedSubview(seg)
+        let segBox = UIView()
+        segBox.translatesAutoresizingMaskIntoConstraints = false
+        segBox.addSubview(seg)
+        NSLayoutConstraint.activate([
+            seg.topAnchor.constraint(equalTo: segBox.topAnchor, constant: 12),
+            seg.leadingAnchor.constraint(equalTo: segBox.leadingAnchor, constant: 16),
+            seg.trailingAnchor.constraint(equalTo: segBox.trailingAnchor, constant: -16),
+            seg.bottomAnchor.constraint(equalTo: segBox.bottomAnchor, constant: -12),
+            seg.heightAnchor.constraint(equalToConstant: 34)
+        ])
+        outStack.addArrangedSubview(segBox)
+        outStack.addArrangedSubview(insetSeparator())
 
-        let audioRow = UIStackView()
-        audioRow.axis = .horizontal
-        audioRow.alignment = .center
-        audioRow.addArrangedSubview(Ctl.label("保留原声", size: 15, weight: .medium, color: Theme.text))
-        let spacer = UIView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        audioRow.addArrangedSubview(spacer)
         audioSwitch.onTintColor = Theme.accent
         audioSwitch.isOn = true
-        audioRow.addArrangedSubview(audioSwitch)
-        s3.addArrangedSubview(audioRow)
-        s3.setCustomSpacing(16, after: seg)
+        outStack.addArrangedSubview(Ctl.row(icon: nil, title: "保留原声", valueView: audioSwitch))
+        content.addArrangedSubview(outCard)
+        content.setCustomSpacing(18, after: outCard)
 
-        s3.addArrangedSubview(Ctl.label("画面按源分辨率与码率原样保留，不缩放、不二次编码。",
-                                       size: 11.5, color: Theme.faint, lines: 2))
-        content.addArrangedSubview(card3)
-
-        // 主按钮
+        // ---- 主按钮
         content.addArrangedSubview(genButton)
+        content.setCustomSpacing(12, after: genButton)
 
-        // 状态
+        // ---- 状态行
         let statusRow = UIStackView()
         statusRow.axis = .horizontal
-        statusRow.alignment = .top
+        statusRow.alignment = .center
         statusRow.spacing = 8
         spinner.hidesWhenStopped = true
         spinner.color = Theme.sub
         statusRow.addArrangedSubview(spinner)
         statusRow.addArrangedSubview(statusLabel)
         content.addArrangedSubview(statusRow)
+        content.setCustomSpacing(22, after: statusRow)
 
-        // 结果
-        let (card4, s4) = cardBox("结果")
-        s4.addArrangedSubview(resultLabel)
-        s4.addArrangedSubview(openPhotosButton)
-        selfTestButton.addTarget(self, action: #selector(onSelfTest), for: .touchUpInside)
-        s4.addArrangedSubview(selfTestButton)
-        content.addArrangedSubview(card4)
+        // ---- 结果
+        content.addArrangedSubview(Ctl.sectionHeader("结果"))
+        content.setCustomSpacing(7, after: content.arrangedSubviews.last!)
 
-        // 日志
-        let (card5, s5) = cardBox("运行日志")
-        s5.addArrangedSubview(logLabel)
-        let copyBtn = Ctl.button("复制日志", bg: Theme.cardInner, fg: Theme.sub, height: 36, size: 13)
+        let resCard = Ctl.card()
+        let resStack = UIStackView()
+        resStack.axis = .vertical
+        resStack.spacing = 12
+        resStack.translatesAutoresizingMaskIntoConstraints = false
+        resCard.addSubview(resStack)
+        NSLayoutConstraint.activate([
+            resStack.topAnchor.constraint(equalTo: resCard.topAnchor, constant: 14),
+            resStack.leadingAnchor.constraint(equalTo: resCard.leadingAnchor, constant: 16),
+            resStack.trailingAnchor.constraint(equalTo: resCard.trailingAnchor, constant: -16),
+            resStack.bottomAnchor.constraint(equalTo: resCard.bottomAnchor, constant: -14)
+        ])
+        resStack.addArrangedSubview(resultLabel)
+        resStack.addArrangedSubview(openPhotosButton)
+        resStack.addArrangedSubview(selfTestButton)
+        content.addArrangedSubview(resCard)
+        content.setCustomSpacing(22, after: resCard)
+
+        // ---- 日志
+        content.addArrangedSubview(Ctl.sectionHeader("运行日志"))
+        content.setCustomSpacing(7, after: content.arrangedSubviews.last!)
+
+        let logCard = Ctl.card()
+        let logStack = UIStackView()
+        logStack.axis = .vertical
+        logStack.spacing = 12
+        logStack.translatesAutoresizingMaskIntoConstraints = false
+        logCard.addSubview(logStack)
+        NSLayoutConstraint.activate([
+            logStack.topAnchor.constraint(equalTo: logCard.topAnchor, constant: 14),
+            logStack.leadingAnchor.constraint(equalTo: logCard.leadingAnchor, constant: 16),
+            logStack.trailingAnchor.constraint(equalTo: logCard.trailingAnchor, constant: -16),
+            logStack.bottomAnchor.constraint(equalTo: logCard.bottomAnchor, constant: -14)
+        ])
+        logStack.addArrangedSubview(logLabel)
+        let copyBtn = Ctl.tintedButton("复制日志", height: 40)
         copyBtn.addTarget(self, action: #selector(onCopyLog), for: .touchUpInside)
-        s5.addArrangedSubview(copyBtn)
-        content.addArrangedSubview(card5)
+        logStack.addArrangedSubview(copyBtn)
+        content.addArrangedSubview(logCard)
+        content.setCustomSpacing(24, after: logCard)
 
+        // ---- 页脚
         content.addArrangedSubview(makeFooter())
     }
 
-    private func cardBox(_ tag: String) -> (UIView, UIStackView) {
-        let card = Ctl.card()
-        let s = UIStackView()
-        s.axis = .vertical
-        s.spacing = 10
-        s.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(s)
+    private func insetSeparator() -> UIView {
+        let holder = UIView()
+        holder.translatesAutoresizingMaskIntoConstraints = false
+        let line = Ctl.separator()
+        holder.addSubview(line)
         NSLayoutConstraint.activate([
-            s.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
-            s.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
-            s.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-            s.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14)
+            line.topAnchor.constraint(equalTo: holder.topAnchor),
+            line.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
+            line.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 16),
+            line.trailingAnchor.constraint(equalTo: holder.trailingAnchor)
         ])
-        let t = Ctl.sectionTag(tag.uppercased())
-        s.addArrangedSubview(t)
-        s.setCustomSpacing(8, after: t)
-        return (card, s)
+        return holder
     }
 
-    private func makeInfoGrid() -> UIView {
-        var rows: [UIStackView] = []
-        let titles = ["分辨率", "编码", "时长", "码率"]
-        for r in 0..<2 {
-            let row = UIStackView()
-            row.axis = .horizontal
-            row.spacing = 10
-            row.distribution = .fillEqually
-            for c in 0..<2 {
-                let idx = r * 2 + c
-                let (box, val) = infoCell(titles[idx])
-                infoValues.append(val)
-                row.addArrangedSubview(box)
-            }
-            rows.append(row)
-        }
-        let outer = UIStackView(arrangedSubviews: rows)
-        outer.axis = .vertical
-        outer.spacing = 10
-        return outer
+    private func buildPickRow() {
+        pickRow.translatesAutoresizingMaskIntoConstraints = false
+        pickRow.heightAnchor.constraint(equalToConstant: 48).isActive = true
+
+        let icon = Ctl.icon("photo.on.rectangle.angled", size: 18)
+        let title = Ctl.label("从相册选择视频", size: 16, color: Theme.accent)
+        let chev = Ctl.icon("chevron.right", color: Theme.faint, size: 12, weight: .semibold)
+
+        pickRow.addSubview(icon)
+        pickRow.addSubview(title)
+        pickRow.addSubview(chev)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: pickRow.leadingAnchor, constant: 16),
+            icon.centerYAnchor.constraint(equalTo: pickRow.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
+            title.centerYAnchor.constraint(equalTo: pickRow.centerYAnchor),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: chev.leadingAnchor, constant: -8),
+            chev.trailingAnchor.constraint(equalTo: pickRow.trailingAnchor, constant: -16),
+            chev.centerYAnchor.constraint(equalTo: pickRow.centerYAnchor),
+            chev.widthAnchor.constraint(equalToConstant: 10)
+        ])
     }
 
-    private func infoCell(_ title: String) -> (UIView, UILabel) {
+    private func fileRow() -> UIView {
         let box = UIView()
-        box.backgroundColor = Theme.cardInner
-        box.layer.cornerRadius = 12
-        box.layer.cornerCurve = .continuous
         box.translatesAutoresizingMaskIntoConstraints = false
-
-        let t = Ctl.label(title, size: 10.5, weight: .medium, color: Theme.faint)
-        let v = Ctl.label("—", size: 13.5, weight: .semibold, color: Theme.text)
-        box.addSubview(t)
-        box.addSubview(v)
+        box.addSubview(fileLabel)
         NSLayoutConstraint.activate([
-            t.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
-            t.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
-            t.trailingAnchor.constraint(lessThanOrEqualTo: box.trailingAnchor, constant: -10),
-            v.topAnchor.constraint(equalTo: t.bottomAnchor, constant: 3),
-            v.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
-            v.trailingAnchor.constraint(lessThanOrEqualTo: box.trailingAnchor, constant: -10),
-            v.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10)
+            fileLabel.topAnchor.constraint(equalTo: box.topAnchor, constant: 12),
+            fileLabel.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
+            fileLabel.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -16),
+            fileLabel.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -12)
         ])
-        return (box, v)
+        return box
+    }
+
+    private func infoRows() -> UIView {
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.spacing = 0
+        let titles = ["分辨率", "编码格式", "时长", "码率"]
+        for (i, t) in titles.enumerated() {
+            let v = Ctl.label("—", size: 15, color: Theme.sub)
+            v.textAlignment = .right
+            v.setContentHuggingPriority(.required, for: .horizontal)
+            infoValues.append(v)
+            stack.addArrangedSubview(Ctl.row(icon: nil, title: t, valueView: v))
+            if i < titles.count - 1 {
+                stack.addArrangedSubview(insetSeparator())
+            }
+        }
+        return stack
     }
 
     private func makeFooter() -> UIView {
         let s = UIStackView()
         s.axis = .vertical
-        s.spacing = 6
-        s.addArrangedSubview(Ctl.label("设置壁纸",
-                                      size: 12, weight: .semibold, color: Theme.sub))
-        s.addArrangedSubview(Ctl.label("设置 → 墙纸 → 添加新墙纸 → 照片 → 实况照片 → 选中它 → 设定锁定屏幕",
-                                      size: 11.5, color: Theme.faint, lines: 3))
-        s.addArrangedSubview(Ctl.label("亮屏时播一次；低电量模式、减弱动态效果会关掉动效；主屏幕始终静止。",
-                                      size: 11.5, color: Theme.faint, lines: 3))
+        s.spacing = 8
+        s.addArrangedSubview(Ctl.label("如何设为壁纸", size: 13, weight: .semibold, color: Theme.sub))
+        s.addArrangedSubview(Ctl.label(
+            "设置 → 墙纸 → 添加新墙纸 → 照片 → 实况照片 → 选中它 → 左下角「实况」点亮 → 设定锁定屏幕",
+            size: 12.5, color: Theme.faint))
+        s.addArrangedSubview(Ctl.label(
+            "亮屏时播一次；低电量模式、减弱动态效果会关掉动效；主屏幕始终静止。",
+            size: 12.5, color: Theme.faint))
         return s
+    }
+
+    private func applySegmentStyle() {
+        seg.selectedSegmentTintColor = Theme.accent
+        seg.setTitleTextAttributes([.foregroundColor: Theme.onAccent,
+                                    .font: Theme.font(13, .semibold)], for: .selected)
+        seg.setTitleTextAttributes([.foregroundColor: Theme.text,
+                                    .font: Theme.font(13, .medium)], for: .normal)
     }
 
     // MARK: - 事件
 
     private func wireActions() {
-        pickButton.addTarget(self, action: #selector(onPick), for: .touchUpInside)
+        pickRow.addTarget(self, action: #selector(onPick), for: .touchUpInside)
         genButton.addTarget(self, action: #selector(onGenerate), for: .touchUpInside)
         openPhotosButton.addTarget(self, action: #selector(onOpenPhotos), for: .touchUpInside)
+        selfTestButton.addTarget(self, action: #selector(onSelfTest), for: .touchUpInside)
     }
 
     @objc private func onPick() {
@@ -285,7 +339,7 @@ final class RootViewController: UIViewController {
             self.sourceURL = url
             self.pickedInfo = MediaInspector.inspect(url)
             self.fileLabel.text = url.lastPathComponent
-            self.fileLabel.textColor = Theme.sub
+            self.fileLabel.textColor = Theme.text
             self.refreshInfo()
             self.resultLabel.text = "尚未生成"
             self.resultLabel.textColor = Theme.sub
@@ -295,7 +349,6 @@ final class RootViewController: UIViewController {
         present(p.makeController(), animated: true, completion: nil)
     }
 
-    // 生成期间申请后台任务额度，避免切出去再回来时 AVFoundation 状态错乱
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
 
     private func beginBG() {
@@ -317,19 +370,20 @@ final class RootViewController: UIViewController {
         guard !busy else { return }
         guard let src = sourceURL else {
             statusLabel.text = "请先选择一段视频"
+            statusLabel.textColor = Theme.warn
             return
         }
-        let idx = seg.selectedSegmentIndex
         let maxSeconds: Double
-        switch idx {
+        switch seg.selectedSegmentIndex {
         case 1: maxSeconds = 5
-        case 2: maxSeconds = 0        // 0 = 不截断
+        case 2: maxSeconds = 0
         default: maxSeconds = 3
         }
         let audio = audioSwitch.isOn
 
         resultLabel.text = "处理中…"
         resultLabel.textColor = Theme.sub
+        statusLabel.textColor = Theme.sub
         setBusy(true, "准备中…")
         beginBG()
 
@@ -341,16 +395,12 @@ final class RootViewController: UIViewController {
                                                    keepAudio: audio) { s in
                     DispatchQueue.main.async { self.statusLabel.text = s }
                 }
-
-                // 产物副本留一份到 Documents，方便出问题时取证
                 self.keepCopy(made)
 
                 DispatchQueue.main.async { self.statusLabel.text = "写入相册…" }
                 let lid = try PhotoSaver.savePair(photo: made.photoURL, video: made.videoURL)
                 let live = PhotoSaver.waitPhotoLive(localIdentifier: lid)
 
-                // 壁纸引擎看的是 MOV 的轨结构，PHAsset 的 .photoLive 标志说明不了任何问题。
-                // 这里直接验产物本身，把「能不能设壁纸」的判断摆到界面上。
                 let chk = LiveCheck.verify(videoURL: made.videoURL)
                 Diag.log("产物结构自检：" + chk.summary)
 
@@ -360,15 +410,15 @@ final class RootViewController: UIViewController {
                 DispatchQueue.main.async {
                     self.endBG()
                     if chk.ok {
-                        self.setBusy(false, "完成 · 结构完整，可设为锁屏实况")
+                        self.setBusy(false, "完成 · 结构完整")
                         self.resultLabel.text = String(format:
-                            "✅ 实况照片已生成（HEVC + 4 轨齐全）\n动态 %.2f MB · 静帧 %.2f MB\n分辨率 %d×%d（与源一致）\n\n设壁纸：设置 → 墙纸 → 添加新墙纸 → 照片 → 实况照片 → 选中它 → 左下角「实况」按钮点亮 → 设定锁定屏幕",
+                            "已生成：HEVC + 4 轨齐全\n动态 %.2f MB · 静帧 %.2f MB · %d×%d\n\n按下方说明设为锁屏壁纸。",
                             mb, photoMB, made.info.width, made.info.height)
-                        self.resultLabel.textColor = Theme.accent
+                        self.resultLabel.textColor = Theme.text
                     } else {
-                        self.setBusy(false, "已写入相册 · 但结构不完整")
+                        self.setBusy(false, "结构不完整")
                         self.resultLabel.text = String(format:
-                            "⚠️ %@\n动态 %.2f MB · 静帧 %.2f MB\n相册里可能只显示成普通照片。请把 lpw.log 发给开发者",
+                            "%@\n动态 %.2f MB · 静帧 %.2f MB\n相册里可能只显示成普通照片，把日志发给开发者",
                             chk.summary, mb, photoMB)
                         self.resultLabel.textColor = Theme.warn
                     }
@@ -381,7 +431,7 @@ final class RootViewController: UIViewController {
                 DispatchQueue.main.async {
                     self.endBG()
                     self.setBusy(false, "失败")
-                    self.resultLabel.text = "❌ " + msg
+                    self.resultLabel.text = msg
                     self.resultLabel.textColor = Theme.danger
                 }
             }
@@ -400,7 +450,8 @@ final class RootViewController: UIViewController {
             self.endBG()
             self.setBusy(false, "自检结束")
             self.resultLabel.text = summary
-            self.resultLabel.textColor = summary.hasPrefix("✅") ? Theme.accent : Theme.warn
+            self.resultLabel.textColor = summary.hasPrefix("自检全部通过") || summary.contains("✅")
+                ? Theme.ok : Theme.warn
         })
         beginBG()
     }
@@ -410,10 +461,9 @@ final class RootViewController: UIViewController {
         let boot = (try? String(contentsOf: Diag.bootURL, encoding: .utf8)) ?? ""
         let crash = CrashCatcher.readAll()
         var all = "=== boot.log ===\n" + boot + "\n=== lpw.log ===\n" + text
-        if !crash.isEmpty {
-            all += "\n=== crash.log ===\n" + crash
-        }
+        if !crash.isEmpty { all += "\n=== crash.log ===\n" + crash }
         UIPasteboard.general.string = all
+        statusLabel.textColor = Theme.sub
         statusLabel.text = crash.isEmpty ? "日志已复制到剪贴板" : "日志已复制（含崩溃记录）"
     }
 
@@ -440,9 +490,9 @@ final class RootViewController: UIViewController {
     private func setBusy(_ b: Bool, _ text: String) {
         busy = b
         genButton.isEnabled = !b
-        pickButton.isEnabled = !b
-        genButton.alpha = b ? 0.5 : 1
-        pickButton.alpha = b ? 0.6 : 1
+        pickRow.isEnabled = !b
+        genButton.alpha = b ? 0.45 : 1
+        pickRow.alpha = b ? 0.55 : 1
         if b { spinner.startAnimating() } else { spinner.stopAnimating() }
         if !text.isEmpty { statusLabel.text = text }
     }
@@ -455,8 +505,8 @@ final class RootViewController: UIViewController {
 
     private func keepCopy(_ made: MadeLive) {
         let fm = FileManager.default
-        for (src, prefix) in [(made.videoURL, "out_"), (made.photoURL, "out_")] {
-            let dst = Diag.dir.appendingPathComponent(prefix + src.lastPathComponent)
+        for src in [made.videoURL, made.photoURL] {
+            let dst = Diag.dir.appendingPathComponent("out_" + src.lastPathComponent)
             try? fm.removeItem(at: dst)
             try? fm.copyItem(at: src, to: dst)
         }
@@ -467,8 +517,8 @@ final class RootViewController: UIViewController {
         _ = NotificationCenter.default.addObserver(forName: .lpwLog, object: nil, queue: .main) { [weak self] n in
             guard let self = self, let line = n.userInfo?["line"] as? String else { return }
             self.logLines.append(line)
-            if self.logLines.count > 9 {
-                self.logLines.removeFirst(self.logLines.count - 9)
+            if self.logLines.count > 10 {
+                self.logLines.removeFirst(self.logLines.count - 10)
             }
             self.logLabel.text = self.logLines.joined(separator: "\n")
         }

@@ -54,12 +54,27 @@ enum StillWriter {
                       identifier: String,
                       dateString: String) throws -> URL {
 
-        // 路 1：HEIC（画质最好），按字节确认 MakerNote 真写进去了
+        let tiff = buildTiff(identifier: identifier,
+                             dateString: dateString,
+                             width: cgImage.width,
+                             height: cgImage.height)
+
+        // 路 1：HEIC + 手工注入 Exif
+        //
+        // 真机拍的实况照片清一色 HEIC。ImageIO 写 HEIC 会把 MakerNote 静默丢掉，
+        // 所以写完再按 HEIF 的 iloc 把 Exif item 换掉（图像数据不动）。
         let heicURL = dir.appendingPathComponent(baseName + ".heic")
-        if debugWriteHEIC(cgImage, to: heicURL, identifier: identifier, dateString: dateString),
-           containsMakerNote(at: heicURL, expecting: identifier) {
-            Diag.log("静帧：HEIC 写入 MakerNote 成功")
-            return heicURL
+        if debugWriteHEIC(cgImage, to: heicURL, identifier: identifier, dateString: dateString) {
+            do {
+                let n = try HeicExifInjector.inject(tiff: tiff, into: heicURL)
+                if containsMakerNote(at: heicURL, expecting: identifier) {
+                    Diag.log("静帧：HEIC + 注入 Exif 成功（Exif item \(n)B）")
+                    return heicURL
+                }
+                Diag.log("静帧：HEIC 注入后仍找不到 MakerNote，退回 JPEG")
+            } catch {
+                Diag.log("静帧：HEIC 注入失败（\(error)），退回 JPEG")
+            }
         }
         try? FileManager.default.removeItem(at: heicURL)
 
@@ -163,6 +178,21 @@ enum StillWriter {
     }
 
     /// 组装完整的 APP1(Exif) 段：FFE1 + 长度 + "Exif\0\0" + TIFF
+    private static func buildApp1(identifier: String, dateString: String,
+                                  width: Int, height: Int) -> Data {
+        let tiff = buildTiff(identifier: identifier, dateString: dateString,
+                             width: width, height: height)
+        var app1 = Data([0xFF, 0xE1])
+        let segLen = 2 + 6 + tiff.count
+        app1.append(contentsOf: be16(segLen))
+        app1.append(contentsOf: Array("Exif".utf8))
+        app1.append(0x00)
+        app1.append(0x00)
+        app1.append(tiff)
+        return app1
+    }
+
+    /// 裸 TIFF（JPEG APP1 里 "Exif\0\0" 之后那段），HEIC 的 Exif item 也用它
     ///
     /// TIFF 布局（大端 MM）：
     ///   0..7      header
@@ -174,8 +204,8 @@ enum StillWriter {
     ///   154..173  DateTimeOriginal(20)
     ///   174..193  DateTimeDigitized(20)
     ///   194..262  MakerNote(69)
-    private static func buildApp1(identifier: String, dateString: String,
-                                  width: Int, height: Int) -> Data {
+    static func buildTiff(identifier: String, dateString: String,
+                          width: Int, height: Int) -> Data {
         let mn = makerNote(identifier: identifier)
 
         var make = Array("Apple".utf8);  make.append(0)       // 6
@@ -222,15 +252,7 @@ enum StillWriter {
         tiff.append(contentsOf: dt)
         tiff.append(contentsOf: dt)
         tiff.append(mn)
-
-        var app1 = Data([0xFF, 0xE1])
-        let segLen = 2 + 6 + tiff.count
-        app1.append(contentsOf: be16(segLen))
-        app1.append(contentsOf: Array("Exif".utf8))
-        app1.append(0x00)
-        app1.append(0x00)
-        app1.append(tiff)
-        return app1
+        return tiff
     }
 
     private static func entry(_ tag: Int, _ type: Int, _ count: Int, _ value: [UInt8]) -> [UInt8] {

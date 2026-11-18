@@ -1,96 +1,155 @@
 import UIKit
 
-// 跟随系统浅色 / 深色模式。
-// 浅色模式：纯白背景 + 浅灰卡片 + 深色文字（强调色压深，保证白底上的对比度）
-// 深色模式：深空背景 + 深灰卡片 + 白字
-private func dyn(light: UIColor, dark: UIColor) -> UIColor {
-    UIColor { trait in
-        trait.userInterfaceStyle == .dark ? dark : light
-    }
-}
-
-func hexColor(_ hex: UInt32, _ alpha: CGFloat = 1) -> UIColor {
-    UIColor(red: CGFloat((hex >> 16) & 0xFF) / 255.0,
-            green: CGFloat((hex >> 8) & 0xFF) / 255.0,
-            blue: CGFloat(hex & 0xFF) / 255.0,
-            alpha: alpha)
-}
-
+/// iOS 原生（Settings / inset-grouped）配色。
+/// 全部使用系统语义色：浅色 / 深色 / 提高对比度模式都自动正确。
 enum Theme {
-    static let background = dyn(light: .white, dark: hexColor(0x0B0D13))
-    static let card       = dyn(light: hexColor(0xF2F4F7), dark: hexColor(0x191C25))
-    static let cardInner  = dyn(light: hexColor(0xE8EBF0), dark: hexColor(0x232733))
-    static let accent     = dyn(light: hexColor(0x0E9F7E), dark: hexColor(0x4ADEBB))
-    static let onAccent   = dyn(light: .white, dark: hexColor(0x04160F))
-    static let text       = dyn(light: hexColor(0x111318), dark: .white)
-    static let sub        = dyn(light: hexColor(0x5B6472), dark: hexColor(0x99A1AF))
-    static let faint      = dyn(light: hexColor(0x8A93A3), dark: hexColor(0x6B7482))
-    static let warn       = dyn(light: hexColor(0xB45309), dark: hexColor(0xFFA05C))
-    static let danger     = dyn(light: hexColor(0xD92D20), dark: hexColor(0xFF6B6B))
+    static let bg         = UIColor.systemGroupedBackground
+    static let card       = UIColor.secondarySystemGroupedBackground
+    static let cardInner  = UIColor.tertiarySystemGroupedBackground
+    static let accent     = UIColor.systemBlue
+    static let onAccent   = UIColor.white
+    static let text       = UIColor.label
+    static let sub        = UIColor.secondaryLabel
+    static let faint      = UIColor.tertiaryLabel
+    static let separator  = UIColor.separator
+    static let warn       = UIColor.systemOrange
+    static let danger     = UIColor.systemRed
+    static let ok         = UIColor.systemGreen
 
-    static func titleFont(_ size: CGFloat) -> UIFont {
-        UIFont.systemFont(ofSize: size, weight: .bold)
-    }
-    // 固定字号，不跟随系统「动态字体」。
-    // systemFont(ofSize:) 在系统开启大字模式时仍会被放大，配合固定高度的卡片
-    // 会导致文字溢出、界面错乱（用户反馈"生成后整个画面变得非常大"）。
-    // 用 fontDescriptor + 指定 size 的方式创建，系统不再自动缩放。
+    /// 固定字号，绝不跟随「动态字体」。
+    /// systemFont(ofSize:) 在系统开大字模式时仍会被放大，配合固定高度卡片会让整页错乱
+    /// —— 老板反馈过两次「生成后整个画面变得非常大」，这里用 descriptor 锁死。
     static func font(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
         let d = UIFont.systemFont(ofSize: size, weight: weight).fontDescriptor
         return UIFont(descriptor: d, size: size)
     }
-    static func mono(_ size: CGFloat) -> UIFont {
-        let d = UIFont.monospacedSystemFont(ofSize: size, weight: .regular).fontDescriptor
+
+    static func mono(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
+        let d = UIFont.monospacedSystemFont(ofSize: size, weight: weight).fontDescriptor
         return UIFont(descriptor: d, size: size)
     }
 }
 
+/// 原生风格控件工厂
 enum Ctl {
 
     static func label(_ text: String,
                       size: CGFloat,
                       weight: UIFont.Weight = .regular,
                       color: UIColor = Theme.text,
-                      lines: Int = 1,
-                      mono: Bool = false) -> UILabel {
+                      lines: Int = 0) -> UILabel {
         let l = UILabel()
         l.text = text
         l.numberOfLines = lines
         l.textColor = color
-        l.font = mono ? Theme.mono(size) : Theme.font(size, weight)
+        l.font = Theme.font(size, weight)
         l.adjustsFontForContentSizeCategory = false
         l.translatesAutoresizingMaskIntoConstraints = false
         return l
     }
 
-    static func card() -> UIView {
+    /// 系统 Settings 里的分组卡片：圆角 10、纯色底
+    static func card(corner: CGFloat = 10) -> UIView {
         let v = UIView()
         v.backgroundColor = Theme.card
-        v.layer.cornerRadius = 18
+        v.layer.cornerRadius = corner
         v.layer.cornerCurve = .continuous
         v.translatesAutoresizingMaskIntoConstraints = false
         return v
     }
 
-    static func sectionTag(_ text: String) -> UILabel {
-        label(text, size: 11.5, weight: .bold, color: Theme.accent)
+    /// 分组标题：系统样式是 13pt 常规、次要色、左侧留白
+    static func sectionHeader(_ text: String) -> UILabel {
+        label(text, size: 13, weight: .regular, color: Theme.sub)
     }
 
-    static func button(_ title: String,
-                       bg: UIColor,
-                       fg: UIColor,
-                       height: CGFloat = 50,
-                       size: CGFloat = 16) -> UIButton {
+    static func separator(_ inset: CGFloat = 16) -> UIView {
+        let v = UIView()
+        v.backgroundColor = Theme.separator
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+        return v
+    }
+
+    /// SF Symbol 图标
+    static func icon(_ name: String, color: UIColor = Theme.accent, size: CGFloat = 18, weight: UIFont.Weight = .semibold) -> UIImageView {
+        let cfg = UIImage.SymbolConfiguration(pointSize: size, weight: symbolWeight(weight))
+        let iv = UIImageView(image: UIImage(systemName: name, withConfiguration: cfg))
+        iv.tintColor = color
+        iv.contentMode = .scaleAspectFit
+        iv.translatesAutoresizingMaskIntoConstraints = false
+        iv.setContentHuggingPriority(.required, for: .horizontal)
+        iv.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return iv
+    }
+
+    private static func symbolWeight(_ w: UIFont.Weight) -> UIImage.SymbolWeight {
+        switch w {
+        case .bold: return .bold
+        case .semibold: return .semibold
+        case .medium: return .medium
+        case .light: return .light
+        default: return .regular
+        }
+    }
+
+    /// 主按钮：系统填充样式（圆角 12 / 高 50 / 半粗 17pt）
+    static func filledButton(_ title: String, height: CGFloat = 50) -> UIButton {
         let b = UIButton(type: .system)
         b.setTitle(title, for: .normal)
-        b.setTitleColor(fg, for: .normal)
-        b.titleLabel?.font = Theme.font(size, .semibold)
+        b.setTitleColor(Theme.onAccent, for: .normal)
+        b.titleLabel?.font = Theme.font(17, .semibold)
         b.titleLabel?.adjustsFontForContentSizeCategory = false
-        b.backgroundColor = bg
-        b.layer.cornerRadius = 13
+        b.backgroundColor = Theme.accent
+        b.layer.cornerRadius = 12
         b.layer.cornerCurve = .continuous
         b.translatesAutoresizingMaskIntoConstraints = false
         b.heightAnchor.constraint(equalToConstant: height).isActive = true
         return b
+    }
+
+    /// 次按钮：系统浅填充
+    static func tintedButton(_ title: String, height: CGFloat = 46) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(title, for: .normal)
+        b.setTitleColor(Theme.accent, for: .normal)
+        b.titleLabel?.font = Theme.font(16, .semibold)
+        b.titleLabel?.adjustsFontForContentSizeCategory = false
+        b.backgroundColor = Theme.cardInner
+        b.layer.cornerRadius = 12
+        b.layer.cornerCurve = .continuous
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.heightAnchor.constraint(equalToConstant: height).isActive = true
+        return b
+    }
+
+    /// 一行：左图标 + 标题 + 右侧值
+    static func row(icon: String?, title: String, valueView: UIView? = nil,
+                    titleSize: CGFloat = 15, muted: Bool = false) -> UIView {
+        let h = UIStackView()
+        h.axis = .horizontal
+        h.alignment = .center
+        h.spacing = 12
+        h.translatesAutoresizingMaskIntoConstraints = false
+        if let n = icon {
+            h.addArrangedSubview(icon(n, size: 17))
+        }
+        let t = label(title, size: titleSize, weight: muted ? .regular : .regular,
+                      color: Theme.text)
+        t.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        h.addArrangedSubview(t)
+        if let v = valueView {
+            h.addArrangedSubview(v)
+        }
+        let box = UIView()
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(h)
+        NSLayoutConstraint.activate([
+            h.topAnchor.constraint(equalTo: box.topAnchor, constant: 11),
+            h.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
+            h.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -16),
+            h.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -11)
+        ])
+        return box
     }
 }
