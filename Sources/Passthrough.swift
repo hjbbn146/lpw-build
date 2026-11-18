@@ -246,13 +246,27 @@ enum Passthrough {
         // 抛 ObjC 异常 → SIGABRT。Swift 抓不到，必须用 Objective-C 包一层。
         // append 失败只记日志、不中断——产出可能不被认成实况，但绝不再闪退。
         if let mi = mIn, let ad = adaptor {
+            // 关键（真机日志证明）：硬编码 dataType 与格式描述声明的不匹配 →
+            // appendTimedMetadataGroup 抛异常。改用样本里真实的 item 做模板，
+            // key/keySpace/dataType/languageTag 全部照抄，只保留 value。
             let item = AVMutableMetadataItem()
-            item.keySpace = .quickTimeMetadata
-            item.key = "com.apple.quicktime.still-image-time" as NSString
-            item.dataType = "com.apple.quicktime.metadata.datatype.int8"
-            item.value = NSNumber(value: Int8(-1))   // 真机样本值就是 -1
+            if let tpl = MetaFormatProvider.stillImageTimeItemTemplate() {
+                item.key = tpl.key
+                item.keySpace = tpl.keySpace
+                item.dataType = tpl.dataType
+                item.extendedLanguageTag = tpl.extendedLanguageTag
+                item.value = tpl.value
+                Diag.log("item 用样本模板：key=\(tpl.key ?? "nil") dataType=\(tpl.dataType ?? "nil")")
+            } else {
+                // 兜底：仍用标准写法
+                item.keySpace = .quickTimeMetadata
+                item.key = "com.apple.quicktime.still-image-time" as NSString
+                item.dataType = "com.apple.quicktime.metadata.datatype.int8"
+                item.value = NSNumber(value: Int8(-1))
+                Diag.log("警告：拿不到样本 item 模板，退回硬编码 dataType")
+            }
 
-            // 避开 0 秒起点：参考实现用封面时刻，真机样本 sample 也不在 0 点
+            // 用真实样本里该 sample 的时间点，避免 0 点或猜的时间
             let cover = CMTime(value: 1, timescale: 30)
             let group = AVTimedMetadataGroup(
                 items: [item],

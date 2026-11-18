@@ -31,11 +31,17 @@ enum Theme {
     static func titleFont(_ size: CGFloat) -> UIFont {
         UIFont.systemFont(ofSize: size, weight: .bold)
     }
+    // 固定字号，不跟随系统「动态字体」。
+    // systemFont(ofSize:) 在系统开启大字模式时仍会被放大，配合固定高度的卡片
+    // 会导致文字溢出、界面错乱（用户反馈"生成后整个画面变得非常大"）。
+    // 用 fontDescriptor + 指定 size 的方式创建，系统不再自动缩放。
     static func font(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
-        UIFont.systemFont(ofSize: size, weight: weight)
+        let d = UIFont.systemFont(ofSize: size, weight: weight).fontDescriptor
+        return UIFont(descriptor: d, size: size)
     }
     static func mono(_ size: CGFloat) -> UIFont {
-        UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        let d = UIFont.monospacedSystemFont(ofSize: size, weight: .regular).fontDescriptor
+        return UIFont(descriptor: d, size: size)
     }
 }
 
@@ -52,6 +58,7 @@ enum Ctl {
         l.numberOfLines = lines
         l.textColor = color
         l.font = mono ? Theme.mono(size) : Theme.font(size, weight)
+        l.adjustsFontForContentSizeCategory = false
         l.translatesAutoresizingMaskIntoConstraints = false
         return l
     }
@@ -78,6 +85,7 @@ enum Ctl {
         b.setTitle(title, for: .normal)
         b.setTitleColor(fg, for: .normal)
         b.titleLabel?.font = Theme.font(size, .semibold)
+        b.titleLabel?.adjustsFontForContentSizeCategory = false
         b.backgroundColor = bg
         b.layer.cornerRadius = 13
         b.layer.cornerCurve = .continuous

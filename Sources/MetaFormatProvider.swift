@@ -152,6 +152,34 @@ enum MetaFormatProvider {
         return granted
     }
 
+    // MARK: - 从样本取真实的 item 模板（保证 dataType/language tag 完全匹配格式描述）
+
+    /// 返回样本 still-image-time 轨里的第一个真实 AVMetadataItem。
+    /// 用它做模板 append，dataType / keySpace / extendedLanguageTag 一定与
+    /// fromBundledSample() 返回的格式描述匹配 —— 这正是真机崩溃的原因：
+    /// 硬编码的 dataType 字符串与格式描述声明的对不上。
+    static func stillImageTimeItemTemplate() -> AVMetadataItem? {
+        guard let url = Bundle.main.url(forResource: "sample_live", withExtension: "mov") else { return nil }
+        let asset = AVURLAsset(url: url)
+        for t in asset.tracks(withMediaType: .metadata) {
+            guard let anyFmt = t.formatDescriptions.first,
+                  isStillImageTimeFormat(anyFmt as! CMFormatDescription) else { continue }
+            guard let reader = try? AVAssetReader(asset: asset) else { continue }
+            let out = AVAssetReaderTrackOutput(track: t, outputSettings: nil)
+            out.alwaysCopiesSampleData = true
+            guard reader.canAdd(out) else { continue }
+            reader.add(out)
+            guard reader.startReading() else { continue }
+            while let sb = out.copyNextSampleBuffer() {
+                if let groups = try? sb.metadataGroups(), let g = groups.first,
+                   let real = g.items.first {
+                    return real
+                }
+            }
+        }
+        return nil
+    }
+
     // MARK: - 兜底：自己构造
 
     private static func buildManually() -> CMFormatDescription? {
