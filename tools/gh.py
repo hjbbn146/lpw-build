@@ -57,6 +57,19 @@ def call(method: str, path: str, payload=None, raw=False):
     return body
 
 
+def curl_raw(url: str, dest: pathlib.Path):
+    """带 token 下载二进制（artifact / 日志）。"""
+    cmd = ["curl", "-sSL", "--noproxy", "*", "--retry", "4", "--retry-delay", "3",
+           "--max-time", "180", "-H", f"Authorization: token {TOK}",
+           "-H", "Accept: application/vnd.github+json",
+           "-H", "X-GitHub-Api-Version: 2022-11-28",
+           "-o", str(dest), url]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"curl rc={p.returncode}: {p.stderr[:200]}")
+    return dest
+
+
 def ensure_repo():
     info = call("GET", f"/repos/{OWNER}/{REPO}")
     if info.get("full_name"):

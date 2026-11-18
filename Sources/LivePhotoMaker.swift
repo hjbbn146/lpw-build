@@ -101,9 +101,8 @@ enum LivePhotoMaker {
         reader.timeRange = CMTimeRange(start: .zero,
                                        duration: CMTime(seconds: use, preferredTimescale: 600))
 
-        guard let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil) else {
-            throw MakeError.msg("无法创建视频输出")
-        }
+        // 注意：outputSettings 传 nil 表示「不解码」，直接拿原始压缩样本
+        let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
         vOut.alwaysCopiesSampleData = false
         guard reader.canAdd(vOut) else { throw MakeError.msg("读取器不接受视频输出") }
         reader.add(vOut)
@@ -114,12 +113,11 @@ enum LivePhotoMaker {
             if let af = aTrack.formatDescriptions.first {
                 aFmt = (af as! CMFormatDescription)
             }
-            if let ao = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil) {
-                ao.alwaysCopiesSampleData = false
-                if reader.canAdd(ao) {
-                    reader.add(ao)
-                    aOut = ao
-                }
+            let ao = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil)
+            ao.alwaysCopiesSampleData = false
+            if reader.canAdd(ao) {
+                reader.add(ao)
+                aOut = ao
             }
         }
 
@@ -241,15 +239,12 @@ enum LivePhotoMaker {
         metaItem.value = NSNumber(value: Int8(-1))
         metaItem.dataType = "com.apple.quicktime.metadata.datatype.int8"
 
-        if let group = AVTimedMetadataGroup(items: [metaItem],
-                                            timeRange: CMTimeRange(
-                                                start: coverTime,
-                                                duration: CMTime(value: 1, timescale: 600))) {
-            if !adaptor.append(group) {
-                Diag.log("警告：still-image-time 追加失败")
-            }
-        } else {
-            Diag.log("警告：still-image-time 分组创建失败")
+        let group = AVTimedMetadataGroup(items: [metaItem],
+                                        timeRange: CMTimeRange(
+                                            start: coverTime,
+                                            duration: CMTime(value: 1, timescale: 600)))
+        if !adaptor.append(group) {
+            Diag.log("警告：still-image-time 追加失败")
         }
         mIn.markAsFinished()
 

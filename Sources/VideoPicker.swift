@@ -36,7 +36,7 @@ final class VideoPicker: NSObject, PHPickerViewControllerDelegate {
                 self.onPick(nil)
                 return
             }
-            provider.loadFileRepresentation(forTypeIdentifier: typeId) { url, err in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: typeId) { url, err in
                 guard let url = url else {
                     Diag.log("取文件失败：\(err?.localizedDescription ?? "未知")")
                     DispatchQueue.main.async { self.onPick(nil) }

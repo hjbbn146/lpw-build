@@ -1,6 +1,5 @@
 import UIKit
 import Photos
-import AVFoundation
 
 final class RootViewController: UIViewController {
 
@@ -396,7 +395,7 @@ final class RootViewController: UIViewController {
     }
 
     private func observeLog() {
-        NotificationCenter.default.addObserver(forName: .lpwLog, object: nil, queue: .main) { [weak self] n in
+        _ = NotificationCenter.default.addObserver(forName: .lpwLog, object: nil, queue: .main) { [weak self] n in
             guard let self = self, let line = n.userInfo?["line"] as? String else { return }
             self.logLines.append(line)
             if self.logLines.count > 9 {
