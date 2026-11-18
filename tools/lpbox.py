@@ -129,6 +129,34 @@ def keytag(d, trak):
             return k
     return 'unknown'
 
+def mid_point_pts(d, trak):
+    """静帧必须精确落在视频正中间那一帧上。
+    真机样本 90 帧 / 30fps：elst 的 empty edit = 920 ticks = 第 46 帧的 PTS，
+    正好是 total//2 + 1。照抄样本的这个数值而不按目标视频重算，
+    静帧就会落在两帧之间，iOS 壁纸引擎找不到静帧 → 实况按钮变灰。"""
+    stts = path(d, trak, ['mdia', 'minf', 'stbl', 'stts'])
+    if not stts:
+        return 0, 0
+    P = pay(stts)
+    n = struct.unpack('>I', d[P+4:P+8])[0]
+    entries = []
+    for i in range(n):
+        cnt = struct.unpack('>I', d[P+8+i*8:P+8+i*8+4])[0]
+        delta = struct.unpack('>I', d[P+12+i*8:P+12+i*8+4])[0]
+        entries.append((cnt, delta))
+    total = sum(c for c, _ in entries)
+    if total == 0:
+        return 0, 0
+    target = total // 2 + 1
+    pts = 0
+    idx = 0
+    for cnt, delta in entries:
+        if idx + cnt > target:
+            return pts + (target - idx) * delta, total
+        pts += cnt * delta
+        idx += cnt
+    return pts, total
+
 def transcode(video_mov, sample_mov, out_mov, verbose=True):
     V = open(video_mov, 'rb').read()
     S = open(sample_mov, 'rb').read()
@@ -168,9 +196,10 @@ def transcode(video_mov, sample_mov, out_mov, verbose=True):
     # ---- 视频时长（先算，元数据轨的 elst 要按它裁剪）
     vts, vdur, vP, vver = mdhd_info(V, vtrak)
     dur_ticks = vdur if vts == 600 else vdur * 600 // vts
+    mid_pts, v_frames = mid_point_pts(V, vtrak)
     if verbose:
         print(f'head={len(head)} mdat2 payload 起点={md2_base}')
-        print(f'视频轨 mdhd ts={vts} dur={vdur} → 归一 600 时基 {dur_ticks}')
+        print(f'视频轨 mdhd ts={vts} dur={vdur} · {v_frames} 帧 · 静帧落在第 {v_frames//2+1} 帧 PTS={mid_pts}')
     md2 = bytearray()
     rebuilt = []
     for k, tk in donor:
@@ -217,7 +246,9 @@ def transcode(video_mov, sample_mov, out_mov, verbose=True):
                     seg = struct.unpack('>I', t[q:q+4])[0]
                     mt = struct.unpack('>i', t[q+4:q+8])[0]
                     if mt == -1:
-                        seg = max(1, min(seg, dur_ticks // 2))
+                        # empty edit 就是静帧时刻：必须精确等于中间帧 PTS
+                        seg = mid_pts if (k == 'still-image-time' and mid_pts > 0) \
+                              else max(1, min(seg, dur_ticks // 2))
                         t[q:q+4] = struct.pack('>I', seg)
                     elif seg > 10:
                         t[q:q+4] = struct.pack('>I', min(seg, dur_ticks))
@@ -225,7 +256,8 @@ def transcode(video_mov, sample_mov, out_mov, verbose=True):
                     seg = struct.unpack('>Q', t[q:q+8])[0]
                     mt = struct.unpack('>q', t[q+8:q+16])[0]
                     if mt == -1:
-                        seg = max(1, min(seg, dur_ticks // 2))
+                        seg = mid_pts if (k == 'still-image-time' and mid_pts > 0) \
+                              else max(1, min(seg, dur_ticks // 2))
                         t[q:q+8] = struct.pack('>Q', seg)
                     elif seg > 10:
                         t[q:q+8] = struct.pack('>Q', min(seg, dur_ticks))

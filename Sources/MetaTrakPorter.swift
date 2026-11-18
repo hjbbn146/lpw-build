@@ -73,6 +73,13 @@ enum MetaTrakPorter {
         let (vTimescale, vDur) = mdhdInfo(vMoovData, vTrak)
         let durTicks = vTimescale == 600 ? vDur : (vTimescale > 0 ? vDur * 600 / vTimescale : vDur)
 
+        // 静帧时刻：必须精确落在视频正中间那一帧上
+        // （元数据轨的时基固定 600，视频轨不是 600 时要换算）
+        let midRaw = midPointPts(vMoovData, vTrak)
+        let midPts = (vTimescale == 600 || vTimescale == 0)
+            ? midRaw.pts : midRaw.pts * 600 / vTimescale
+        Diag.log("移植：视频 \(midRaw.frames) 帧 · 静帧取第 \(midRaw.frames/2 + 1) 帧 PTS=\(midPts)")
+
         // ---- 收集元数据 sample
         let md2Base = prefixEnd + 8          // mdat2 头 8 字节
         var mdat2: [UInt8] = []
@@ -127,7 +134,12 @@ enum MetaTrakPorter {
                         let seg = Int(BoxKit.u32(t, q))
                         let mt = Int(BoxKit.i32(t, q + 4))
                         if mt == -1 {
-                            BoxKit.put32(&t, q, UInt32(max(1, min(seg, durTicks / 2))))
+                            // empty edit 就是静帧时刻本身。照抄样本的 920 而不按目标
+                            // 视频重算，静帧会落在两帧之间 → 壁纸引擎找不到静帧 → 按钮变灰。
+                            let v = (key == "still-image-time" && midPts > 0)
+                                ? midPts
+                                : max(1, min(seg, durTicks / 2))
+                            BoxKit.put32(&t, q, UInt32(v))
                         } else if seg > 10 {
                             BoxKit.put32(&t, q, UInt32(min(seg, durTicks)))
                         }
@@ -137,7 +149,10 @@ enum MetaTrakPorter {
                         // 直接 Int(u64) 遇到 0xFFFF... 会溢出崩溃，必须走 bitPattern。
                         let mt = Int(Int64(bitPattern: BoxKit.u64(t, q + 8)))
                         if mt == -1 {
-                            BoxKit.put64(&t, q, UInt64(max(1, min(seg, durTicks / 2))))
+                            let v = (key == "still-image-time" && midPts > 0)
+                                ? midPts
+                                : max(1, min(seg, durTicks / 2))
+                            BoxKit.put64(&t, q, UInt64(v))
                         } else if seg > 10 {
                             BoxKit.put64(&t, q, UInt64(min(seg, durTicks)))
                         }
@@ -236,6 +251,38 @@ enum MetaTrakPorter {
             return (Int(BoxKit.u32(d, p + 12)), Int(BoxKit.u32(d, p + 16)))
         }
         return (Int(BoxKit.u32(d, p + 20)), Int(BoxKit.u64(d, p + 24)))
+    }
+
+    /// 静帧落在视频正中间那一帧的精确 PTS（600 时基）。
+    ///
+    /// 这是整套移植里最容易错、也最要命的一处：
+    /// 真机样本 90 帧 / 30fps，still-image-time 的 elst empty edit = 920 ticks，
+    /// 而 920 恰好等于「第 46 帧（total/2 + 1）的 PTS」—— 一一对应。
+    /// v3.1 直接照抄了样本的 920，遇到 24fps/60fps 的视频静帧就掉进两帧之间，
+    /// 壁纸引擎取不到封面帧，实况按钮于是变灰。
+    /// 老板真机验证：进照片编辑重选一次封面就能用 —— 那正是 Photos 重算了这个时刻。
+    static func midPointPts(_ d: [UInt8], _ trak: BoxKit.Box) -> (pts: Int, frames: Int) {
+        guard let stts = BoxKit.find(d, trak, ["mdia", "minf", "stbl", "stts"]) else { return (0, 0) }
+        let p = BoxKit.payload(stts)
+        let n = Int(BoxKit.u32(d, p + 4))
+        var entries: [(cnt: Int, delta: Int)] = []
+        for i in 0..<n {
+            entries.append((Int(BoxKit.u32(d, p + 8 + i * 8)),
+                            Int(BoxKit.u32(d, p + 12 + i * 8))))
+        }
+        let total = entries.reduce(0) { $0 + $1.cnt }
+        guard total > 0 else { return (0, 0) }
+        let target = total / 2 + 1
+        var pts = 0
+        var idx = 0
+        for e in entries {
+            if idx + e.cnt > target {
+                return (pts + (target - idx) * e.delta, total)
+            }
+            pts += e.cnt * e.delta
+            idx += e.cnt
+        }
+        return (pts, total)
     }
 
     struct Chunk { var off: Int; var sizes: [Int] }
