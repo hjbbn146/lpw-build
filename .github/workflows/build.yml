@@ -26,16 +26,20 @@ jobs:
 
       # 把「ImageIO 到底认不认 MakerNote」这件事在真实 Apple 平台上跑一遍，
       # 结果直接决定 STILL 走 HEIC 还是 JPEG 分支。
-      - name: Probe still-image writer on macOS
+      - name: Probe still-image writer + metadata format
         continue-on-error: true
         run: |
-          set -euo pipefail
+          set +e
           swiftc -O -o probe_macos \
             Sources/Errors.swift \
             Sources/Diag.swift \
             Sources/StillWriter.swift \
-            tools/probe/main.swift
-          ./probe_macos
+            tools/probe/main.swift > probe.txt 2>&1
+          if [ -x ./probe_macos ]; then
+            ./probe_macos >> probe.txt 2>&1
+          fi
+          echo "----------- probe.txt -----------"
+          cat probe.txt
 
       - name: Compile app (arm64, iOS 16+)
         run: |
@@ -123,8 +127,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          [ -f probe.txt ] || echo "probe.txt not produced" > probe.txt
           TAG="build-$(date +%Y%m%d-%H%M%S)"
-          gh release create "$TAG" LiveWallpaper.ipa \
+          gh release create "$TAG" LiveWallpaper.ipa probe.txt \
             --title "LiveWallpaper $TAG" \
             --notes "auto build from ${{ github.sha }}"
           echo "TAG=$TAG" >> $GITHUB_ENV
