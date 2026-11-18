@@ -157,14 +157,19 @@ enum Passthrough {
         writer.metadata = [idItem, dateItem]
 
         // ---- 开跑
+        Diag.log("阶段: writer 已建好（video=\(writer.inputs.contains { $0.mediaType == .video })"
+                 + " audio=\(aIn != nil) meta=\(mIn != nil)）")
+
         guard writer.startWriting() else {
             throw MakeError.msg("启动写入失败：\(writer.error?.localizedDescription ?? "未知")")
         }
         writer.startSession(atSourceTime: .zero)
+        Diag.log("阶段: startWriting + startSession 完成")
         guard reader.startReading() else {
             writer.cancelWriting()
             throw MakeError.msg("启动读取失败：\(reader.error?.localizedDescription ?? "未知")")
         }
+        Diag.log("阶段: reader 开始读取")
 
         // ---- 2) 视频 / 音频交错直通
         //
@@ -324,6 +329,8 @@ enum Passthrough {
                 items: [item],
                 timeRange: CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 30)))
 
+            Diag.log("阶段: 准备写 still-image-time（mIn ready=\(mi.isReadyForMoreMediaData)"
+                     + " writerStatus=\(writer.status.rawValue)）")
             var waited = 0
             while !mi.isReadyForMoreMediaData && waited < 2000 {
                 if writer.status != .writing { break }
@@ -341,6 +348,7 @@ enum Passthrough {
 
         // ---- 收尾
         progress("封装收尾…")
+        Diag.log("阶段: 开始 finishWriting")
         let sem = DispatchSemaphore(value: 0)
         writer.finishWriting { sem.signal() }
         if sem.wait(timeout: .now() + 90) == .timedOut {

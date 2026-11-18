@@ -80,13 +80,32 @@ enum LivePhotoMaker {
         }
 
         // ---- 零重编码直通（视频 + 音频 + 元数据三轨交错写入）
-        let res = try Passthrough.convert(source: source,
+        //
+        // 带音轨失败时自动降级成纯视频再试一次：实况照片没有声音也照样能用，
+        // 总比整个流程失败好。真机上音频轨是最容易把 writer 卡住的变量。
+        let res: Passthrough.Result
+        do {
+            res = try Passthrough.convert(source: source,
                                           outputURL: videoURL,
                                           maxSeconds: maxSeconds,
                                           keepAudio: keepAudio,
                                           metaFormat: mf,
                                           identifier: identifier,
                                           progress: progress)
+        } catch {
+            guard keepAudio else { throw error }
+            Diag.log("带音轨直通失败：" + error.localizedDescription)
+            Diag.log("自动降级为纯视频重试")
+            progress("改为纯视频重试…")
+            try? FileManager.default.removeItem(at: videoURL)
+            res = try Passthrough.convert(source: source,
+                                          outputURL: videoURL,
+                                          maxSeconds: maxSeconds,
+                                          keepAudio: false,
+                                          metaFormat: mf,
+                                          identifier: identifier,
+                                          progress: progress)
+        }
 
         // ---- 静帧
         progress("提取静帧…")
