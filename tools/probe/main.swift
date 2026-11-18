@@ -514,8 +514,12 @@ do {
     // AVURLAsset 未必把 mebx 轨算进 .metadata，所以以二进制里的 key 字符串为准。
     // v4.1 起 video-orientation 必须**不存在**（真机就没有，有它=双重旋转）：
     // 所以这里断言的正是 !ori。
-    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid
-    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid)")
+    // v4.4 起 still-image-time 的 sample 必须换成真机那份 89 字节（标记 + 单位矩阵），
+    // 照搬样本会带上透视分量 → 封面被判不合法。
+    let canonicalSIT = Data(MetaTrakPorter.canonicalStillSample)
+    let sitCanonical = data.range(of: canonicalSIT) != nil
+    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical
+    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical)")
 } catch {
     print("PORTER convert FAIL: \(error.localizedDescription)")
 }

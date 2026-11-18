@@ -108,8 +108,10 @@ enum SelfTest {
             let sit = txt.contains("still-image-time")
             let lpi = txt.contains("live-photo-info")
             let ori = txt.contains("video-orientation")
+            // 静帧变换矩阵必须是真机那份单位矩阵版（89 字节）
+            let sitCanonical = data.range(of: Data(MetaTrakPorter.canonicalStillSample)) != nil
             log("   video=\(vt) metadata=\(mt) identifier=\(hasId)")
-            log("   mebx=\(mebx) still-image-time=\(sit) live-photo-info=\(lpi) orientation=\(ori)")
+            log("   mebx=\(mebx) still-image-time=\(sit) live-photo-info=\(lpi) orientation=\(ori) 单位矩阵=\(sitCanonical)")
 
             // 断言基准 = 真机自己拍的实况照片（iPhone15,4 / iOS 27.2 实测）：
             //   vide + live-photo-info + still-image-time + moov/meta(identifier)
@@ -123,6 +125,7 @@ enum SelfTest {
             if !sit { problems.append("缺 still-image-time") }
             if !lpi { problems.append("缺 live-photo-info") }
             if ori { problems.append("多出 video-orientation（会造成方向转两次）") }
+            if !sitCanonical { problems.append("静帧变换矩阵不是单位矩阵（封面会被判不合法，设不了壁纸）") }
 
             let ok = problems.isEmpty
             log(ok ? "✅ 自检全部通过" : "⚠️ 结构不完整：" + problems.joined(separator: "、"))

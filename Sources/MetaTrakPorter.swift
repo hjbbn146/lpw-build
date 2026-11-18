@@ -41,6 +41,26 @@ enum MetaTrakPorter {
     /// 壁纸引擎判定不可用。去掉它之后，方向只由 tkhd matrix 一个来源决定。
     static let donorOrder = ["live-photo-info", "still-image-time"]
 
+    /// 真机原生的 still-image-time sample 内容（89 字节）。
+    ///
+    /// 与 iPhone15,4 / iOS 27.2 自己拍的实况**逐字节一致**：
+    ///   atom key=1  size=9   0xFF            静帧标记
+    ///   atom key=2  size=80  3×3 单位矩阵     照片相对视频帧的变换
+    ///
+    /// 内置样本那份还多一个 key=3（transform-reference-dimensions 1920×1440），
+    /// 真机没有；矩阵也带透视分量。两者都不能照搬，否则封面会被判不合法。
+    static let canonicalStillSample: [UInt8] = {
+        var s: [UInt8] = []
+        s += [0, 0, 0, 9, 0, 0, 0, 1, 0xFF]
+        s += [0, 0, 0, 80, 0, 0, 0, 2]
+        let one: [UInt8]  = [0x3F, 0xF0, 0, 0, 0, 0, 0, 0]   // IEEE754 double 1.0
+        let zero: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0]
+        s += one + zero + zero
+        s += zero + one + zero
+        s += zero + zero + one
+        return s
+    }()
+
     // MARK: - 入口
 
     /// 原地把 videoURL 重写成带完整实况元数据轨的版本（成功后原文件被覆盖）
@@ -114,6 +134,27 @@ enum MetaTrakPorter {
                     p += sz
                 }
             }
+
+            // 1.5) still-image-time 的 sample 内容必须重建，不能照搬样本
+            //
+            // 真机基准（iPhone15,4 / iOS 27.2 自己拍的实况）实测，这条 sample 是 89 字节、2 个 atom：
+            //    atom key=1  len=1   0xFF（-1，只是「这里有静帧」的标记）
+            //    atom key=2  len=72  3×3 **单位矩阵**
+            //
+            // 内置样本那份是 105 字节、3 个 atom，其中矩阵带剧烈的透视分量：
+            //    [1.000556, -0.000724, -1.193191,
+            //      0.001964,  1.000590, -3.896847,
+            //      0.000001,  0.000001,  0.998850]
+            // 那是别的 App 给「做过透视校正的照片」用的。我们的照片是直接从视频里取的帧，
+            // 本来就该是单位变换。照搬这组数会让 iOS 对我们的照片再做一次不该有的透视变换，
+            // 照片和视频帧对不上 → 封面被判不合法 → 壁纸按钮永远是灰的。
+            //
+            // 用户手动「照片 → 编辑 → 拖动视频轨换封面」之所以立刻能设壁纸，
+            // 就是因为 Photos 重写了这个矩阵。这里我们直接按真机写单位矩阵。
+            if key == "still-image-time" {
+                data = MetaTrakPorter.canonicalStillSample
+            }
+
             mdat2.append(contentsOf: data)
 
             var t = Array(sData[tk.off..<(tk.off + tk.size)])
@@ -136,6 +177,21 @@ enum MetaTrakPorter {
                     let p = BoxKit.payload(b) - base
                     for (i, o) in newOffs.enumerated() { BoxKit.put64(&t, p + 8 + i * 8, UInt64(o)) }
                 }
+            }
+
+            // 2.2) still-image-time 的 stsz 声明尺寸要跟着 sample 内容改成 89
+            if key == "still-image-time",
+               let stsz = BoxKit.find(sData, tk, ["mdia", "minf", "stbl", "stsz"]) {
+                let p = BoxKit.payload(stsz) - base
+                let fixed = Int(BoxKit.u32(t, p + 4))
+                let old = fixed != 0 ? fixed : Int(BoxKit.u32(t, p + 12))
+                let newSize = UInt32(MetaTrakPorter.canonicalStillSample.count)
+                if fixed != 0 {
+                    BoxKit.put32(&t, p + 4, newSize)
+                } else {
+                    BoxKit.put32(&t, p + 12, newSize)
+                }
+                Diag.log("移植：still-image-time sample \(old) → \(newSize) 字节（换成单位矩阵版）")
             }
 
             // 2.5) live-photo-info 的 mdhd duration 钳到视频长度
