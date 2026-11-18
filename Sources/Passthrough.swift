@@ -166,37 +166,6 @@ enum Passthrough {
             throw MakeError.msg("启动读取失败：\(reader.error?.localizedDescription ?? "未知")")
         }
 
-        // ---- 1) 先把 still-image-time 写掉
-        //
-        // 只有一个样本、时间点最早，所以放在最前面写完立刻结束这条轨。
-        // 排在视频/音频之后是死锁的成因之一：writer 发现元数据轨一直空着，
-        // 会把视频 input 压住等它补齐。
-        if let mi = mIn, let ad = adaptor {
-            let item = AVMutableMetadataItem()
-            item.keySpace = .quickTimeMetadata
-            item.key = "com.apple.quicktime.still-image-time" as NSString
-            item.value = NSNumber(value: Int8(-1))
-            item.dataType = "com.apple.quicktime.metadata.datatype.int8"
-
-            let grp = AVTimedMetadataGroup(
-                items: [item],
-                timeRange: CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 30)))
-
-            var waited = 0
-            while !mi.isReadyForMoreMediaData && waited < 2000 {
-                if writer.status != .writing { break }
-                Thread.sleep(forTimeInterval: 0.005)
-                waited += 1
-            }
-            if ad.append(grp) {
-                Diag.log("still-image-time 已写入（int8 -1，起点 0s）")
-            } else {
-                Diag.log("警告：still-image-time 追加失败："
-                         + "\(writer.error?.localizedDescription ?? "status \(writer.status.rawValue)")")
-            }
-            mi.markAsFinished()
-        }
-
         // ---- 2) 视频 / 音频交错直通
         //
         // AVAssetWriter 对多轨有「交错窗口」：如果让视频轨一路跑到底、音频轨
@@ -333,6 +302,42 @@ enum Passthrough {
         result.frames = frameCount
         result.audioSamples = audioCount
         Diag.log("直通完成 · 视频 \(frameCount) 帧 · 音频 \(audioCount) 个样本 · " + Mem.summary())
+
+        // ---- 最后补 still-image-time
+        //
+        // 位置很讲究：必须放在视频/音频都写完之后、finishWriting 之前。
+        //
+        // 试过把它提到最前面（先写元数据再 markAsFinished），理论上能让
+        // writer 少协调一条轨，但真机 iOS 26 上会立刻崩溃 ——
+        // 「一条轨在其余轨还没有任何数据时就宣告结束」这个状态它不接受。
+        // 而放在最后并不会造成交错阻塞：writer 的交错窗口只约束
+        // 「已经在产生数据的轨」，一条自始至终空着的轨不参与滞后计算
+        //（实测卡在第 62 帧那次，是音频轨落后 2 秒导致的，不是元数据轨）。
+        if let mi = mIn, let ad = adaptor {
+            let item = AVMutableMetadataItem()
+            item.keySpace = .quickTimeMetadata
+            item.key = "com.apple.quicktime.still-image-time" as NSString
+            item.value = NSNumber(value: Int8(-1))
+            item.dataType = "com.apple.quicktime.metadata.datatype.int8"
+
+            let metaGroup = AVTimedMetadataGroup(
+                items: [item],
+                timeRange: CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 30)))
+
+            var waited = 0
+            while !mi.isReadyForMoreMediaData && waited < 2000 {
+                if writer.status != .writing { break }
+                Thread.sleep(forTimeInterval: 0.005)
+                waited += 1
+            }
+            if ad.append(metaGroup) {
+                Diag.log("still-image-time 已写入（int8 -1）")
+            } else {
+                Diag.log("警告：still-image-time 追加失败："
+                         + "\(writer.error?.localizedDescription ?? "status \(writer.status.rawValue)")")
+            }
+            mi.markAsFinished()
+        }
 
         // ---- 收尾
         progress("封装收尾…")

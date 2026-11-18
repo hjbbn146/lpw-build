@@ -256,8 +256,36 @@ if let metaFmt = metaFmt {
 // 所以要在这里复现「视频 + 音频双轨」的交错写入，看 New passthrough
 // 写法（requestMediaDataWhenReady）能不能一路跑完。
 
+
+// ---- 探一下 API 到底是「只拒绝 still-image-time」还是「全部拒绝」
+// 这一步决定能不能在 CI 上测三轨（视频 + 音频 + 元数据）。
+print("")
+print("=== 其他 metadata spec 能否构造 ===")
+var altFmt: CMFormatDescription?
+let altCandidates: [(String, String?)] = [
+    ("mdta/com.apple.quicktime.still-image-time", "com.apple.quicktime.metadata.datatype.utf8"),
+    ("mdta/com.apple.quicktime.location.ISO6709", "com.apple.quicktime.metadata.datatype.utf8"),
+    ("mdta/com.apple.quicktime.make", "com.apple.quicktime.metadata.datatype.utf8"),
+    ("com.apple.quicktime.location.ISO6709", nil),
+    ("mebx", nil)
+]
+for (k, dt) in altCandidates {
+    var d: [String: Any] = [idKey: k]
+    if let dt = dt { d[dtKey] = dt }
+    var f: CMFormatDescription?
+    let st = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+        allocator: kCFAllocatorDefault,
+        metadataType: kCMMetadataFormatType_Boxed,
+        metadataSpecifications: [d] as CFArray,
+        formatDescriptionOut: &f)
+    print("ALT \(k) dt=\(dt ?? "nil") status=\(st) fmt=\(f != nil)")
+    if st == noErr, let ff = f, altFmt == nil { altFmt = ff }
+}
+if altFmt == nil { print("ALT 全部失败 → 这个 API 在 26 上整体不可用，CI 无法测三轨") }
+
 print("")
 print("=== 直通实测（视频 + 音频交错）===")
+
 
 /// 生成一段纯色渐变测试视频（H.264，30fps）
 func makeSolidVideo(_ url: URL, w: Int, h: Int, seconds: Double) -> String? {
@@ -406,5 +434,27 @@ if let e = makeSolidVideo(rawVideo, w: 540, h: 960, seconds: 3.0) {
     }
 }
 
+// ---- 有元数据格式时再跑一遍三轨（元数据轨全程空着、最后才写，验证不阻塞）
+var threeOK = false
+if let alt = altFmt, passTestOK {
+    let threeURL = cDir.appendingPathComponent("three.mov")
+    do {
+        let r = try Passthrough.convert(source: srcWithAudio, outputURL: threeURL,
+                                        maxSeconds: 3.0, keepAudio: true, metaFormat: alt,
+                                        identifier: "THREE-TRACK-TEST", progress: { _ in })
+        let oa = AVURLAsset(url: threeURL)
+        print("THREE-TEST OK frames=\(r.frames) audio=\(r.audioSamples)"
+              + " tracks v=\(oa.tracks(withMediaType: .video).count)"
+              + " a=\(oa.tracks(withMediaType: .audio).count)"
+              + " m=\(oa.tracks(withMediaType: .metadata).count)")
+        threeOK = r.frames > 0
+    } catch {
+        print("THREE-TEST FAIL: \(error.localizedDescription)")
+    }
+} else {
+    print("THREE-TEST 跳过（拿不到可用的元数据格式）")
+}
+
 print(passTestOK ? "PASS-TEST PASS" : "PASS-TEST FAIL")
+print(threeOK ? "THREE-TEST PASS" : "THREE-TEST 未通过或跳过")
 exit(passTestOK ? 0 : 9)
