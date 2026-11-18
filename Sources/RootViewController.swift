@@ -345,22 +345,31 @@ final class RootViewController: UIViewController {
                 let lid = try PhotoSaver.savePair(photo: made.photoURL, video: made.videoURL)
                 let live = PhotoSaver.waitPhotoLive(localIdentifier: lid)
 
+                // 壁纸引擎看的是 MOV 的轨结构，PHAsset 的 .photoLive 标志说明不了任何问题。
+                // 这里直接验产物本身，把「能不能设壁纸」的判断摆到界面上。
+                let chk = LiveCheck.verify(videoURL: made.videoURL)
+                Diag.log("产物结构自检：" + chk.summary)
+
                 let mb = self.fileMB(made.videoURL)
                 let photoMB = self.fileMB(made.photoURL)
 
                 DispatchQueue.main.async {
                     self.endBG()
-                    self.setBusy(false, live ? "完成 · 已识别为实况照片" : "已写入相册，但系统未标为实况")
-                    if live {
+                    if chk.ok {
+                        self.setBusy(false, "完成 · 结构完整，可设为锁屏实况")
                         self.resultLabel.text = String(format:
-                            "✅ 实况照片已生成\n动态 %.2f MB · 静帧 %.2f MB\n分辨率 %d×%d（与源一致）",
+                            "✅ 实况照片已生成（HEVC + 4 轨齐全）\n动态 %.2f MB · 静帧 %.2f MB\n分辨率 %d×%d（与源一致）\n\n设壁纸：设置 → 墙纸 → 添加新墙纸 → 照片 → 实况照片 → 选中它 → 左下角「实况」按钮点亮 → 设定锁定屏幕",
                             mb, photoMB, made.info.width, made.info.height)
                         self.resultLabel.textColor = Theme.accent
                     } else {
+                        self.setBusy(false, "已写入相册 · 但结构不完整")
                         self.resultLabel.text = String(format:
-                            "⚠️ 相册里是普通照片 + 视频\n动态 %.2f MB · 静帧 %.2f MB\n请点「打开相册」确认，并把 lpw.log 发给开发者",
-                            mb, photoMB)
+                            "⚠️ %@\n动态 %.2f MB · 静帧 %.2f MB\n相册里可能只显示成普通照片。请把 lpw.log 发给开发者",
+                            chk.summary, mb, photoMB)
                         self.resultLabel.textColor = Theme.warn
+                    }
+                    if !live {
+                        Diag.log("注意：PhotoKit 没把资产标成实况（mediaSubtypes 无 photoLive）")
                     }
                 }
             } catch {
