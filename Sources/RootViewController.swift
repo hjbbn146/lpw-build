@@ -373,11 +373,14 @@ final class RootViewController: UIViewController {
             statusLabel.textColor = Theme.warn
             return
         }
+        // 真机实况视频的时长是**正好 3.000 秒**（1800 ticks @600）。
+        // 传 3.0 时最后一帧的时间戳常常刚好越过 1800，导出成了 3.02~3.04 秒，
+        // 比系统认可的上限多出一点点。这里留一帧余量，保证严格小于标称值。
         let maxSeconds: Double
         switch seg.selectedSegmentIndex {
-        case 1: maxSeconds = 5
+        case 1: maxSeconds = 4.9
         case 2: maxSeconds = 0
-        default: maxSeconds = 3
+        default: maxSeconds = 2.9
         }
         let audio = audioSwitch.isOn
 
