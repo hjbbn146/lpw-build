@@ -464,14 +464,19 @@ let sampleURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 var bundledFmt: CMFormatDescription?
 if FileManager.default.fileExists(atPath: sampleURL.path) {
     let sa = AVURLAsset(url: sampleURL)
+    var metaTracks = 0
     for t in sa.tracks(withMediaType: .metadata) {
+        metaTracks += 1
         if let f = t.formatDescriptions.first {
-            bundledFmt = (f as! CMFormatDescription)
-            let ext = CMFormatDescriptionGetExtensions(bundledFmt!) as? [String: Any] ?? [:]
-            print("BUNDLED fmt 取到 extensions=\(ext)")
-            break
+            let fd = f as! CMFormatDescription
+            let ext = CMFormatDescriptionGetExtensions(fd) as? [String: Any] ?? [:]
+            let desc = String(describing: ext)
+            let isSit = desc.contains("still-image-time")
+            print("BUNDLED 轨\(metaTracks) isStillImageTime=\(isSit)")
+            if isSit && bundledFmt == nil { bundledFmt = fd }
         }
     }
+    print("BUNDLED 共 \(metaTracks) 条 metadata 轨")
 } else {
     print("BUNDLED 样本文件不存在: \(sampleURL.path)")
 }

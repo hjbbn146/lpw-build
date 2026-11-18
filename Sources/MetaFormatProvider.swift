@@ -50,14 +50,19 @@ enum MetaFormatProvider {
             return nil
         }
         let src = AVURLAsset(url: url)
+        // 样本相机实况视频里有多条 mebx 轨（content.identifier / still-image-time /
+        // live-photo-info …），必须挑出 still-image-time 那条，不能用第一条。
         for t in src.tracks(withMediaType: .metadata) {
             guard let anyFmt = t.formatDescriptions.first else { continue }
             let fd = anyFmt as! CMFormatDescription
             let ext = CMFormatDescriptionGetExtensions(fd) as? [String: Any] ?? [:]
-            Diag.log("元数据格式：已从内置样本提取 extensions=\(ext)")
-            return fd
+            let desc = String(describing: ext)
+            if desc.contains("still-image-time") {
+                Diag.log("元数据格式：已从内置样本提取 still-image-time 轨")
+                return fd
+            }
         }
-        Diag.log("元数据格式：内置样本里没有元数据轨")
+        Diag.log("元数据格式：内置样本里没有 still-image-time 轨")
         return nil
     }
 
