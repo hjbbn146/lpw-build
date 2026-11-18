@@ -250,21 +250,35 @@ enum Passthrough {
             // appendTimedMetadataGroup 抛异常。改用样本里真实的 item 做模板，
             // key/keySpace/dataType/languageTag 全部照抄，只保留 value。
             let item = AVMutableMetadataItem()
-            // 从内置样本读真实 item 做模板（内联实现，避免依赖 Photos 模块，
-            // 这样 macOS CI 的 probe 也能编译）。
-            if let tpl = Self.sampleStillImageTimeItem() {
-                item.key = tpl.key as? String
-                item.keySpace = tpl.keySpace
-                item.dataType = tpl.dataType
-                item.extendedLanguageTag = tpl.extendedLanguageTag
-                item.value = tpl.value
-                Diag.log("item 用样本模板：key=\(tpl.key ?? "nil") dataType=\(tpl.dataType ?? "nil")")
+            item.keySpace = .quickTimeMetadata
+            item.key = "com.apple.quicktime.still-image-time" as NSString
+            item.value = NSNumber(value: Int8(-1))
+            // dataType 必须从「写进 writer 的那个格式描述」里读出来，
+            // 硬编码 int8 与样本格式描述声明的不一致 → append 抛异常（真机日志证实）。
+            if let mf = metaFormat,
+               let ext = CMFormatDescriptionGetExtensions(mf) as? [String: Any],
+               let table = ext["MetadataKeyTable"] as? [AnyHashable: Any] {
+                var found: String?
+                for (_, raw) in table {
+                    guard let e = raw as? [String: Any],
+                          let dt = e["MetadataKeyValue"] as? Data,
+                          let ks = String(data: dt, encoding: .utf8),
+                          ks.contains("still-image-time"),
+                          let dtData = e["MetadataKeyDataType"] as? Data,
+                          let dtStr0 = String(data: dtData, encoding: .utf8) else { continue }
+                    let dtStr = dtStr0.trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
+                    found = dtStr
+                    break
+                }
+                if let dtStr = found {
+                    item.dataType = dtStr
+                    Diag.log("item dataType 取自格式描述：\(dtStr)")
+                } else {
+                    item.dataType = "com.apple.quicktime.metadata.datatype.int8"
+                    Diag.log("警告：格式描述里没读到 dataType，退回 int8")
+                }
             } else {
-                item.keySpace = .quickTimeMetadata
-                item.key = "com.apple.quicktime.still-image-time" as NSString
                 item.dataType = "com.apple.quicktime.metadata.datatype.int8"
-                item.value = NSNumber(value: Int8(-1))
-                Diag.log("警告：拿不到样本 item 模板，退回硬编码 dataType")
             }
 
             // 用真实样本里该 sample 的时间点，避免 0 点或猜的时间
@@ -307,38 +321,6 @@ enum Passthrough {
         }
         Diag.log("封装完成 · 产物 \(fmtMB(fileBytes(outputURL)))MB · " + Mem.summary())
         return result
-    }
-
-    /// 从内置样本读 still-image-time 的真实 AVMetadataItem 做模板。
-    /// 内联在这里而不是 MetaFormatProvider，避免引入 Photos 依赖（CI probe 要能编译）。
-    static func sampleStillImageTimeItem() -> AVMetadataItem? {
-        let url: URL
-        if let bundled = Bundle.main.url(forResource: "sample_live", withExtension: "mov") {
-            url = bundled
-        } else {
-            // CI probe 用当前目录读
-            url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("Resources/sample_live.mov")
-        }
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let asset = AVURLAsset(url: url)
-        for t in asset.tracks(withMediaType: .metadata) {
-            guard let reader = try? AVAssetReader(asset: asset) else { continue }
-            let out = AVAssetReaderTrackOutput(track: t, outputSettings: nil)
-            out.alwaysCopiesSampleData = true
-            guard reader.canAdd(out) else { continue }
-            reader.add(out)
-            guard reader.startReading() else { continue }
-            while let sb = out.copyNextSampleBuffer(),
-                  let groups = try? sb.metadataGroups(),
-                  let g = groups.first,
-                  let real = g.items.first,
-                  let k = real.key as? String,
-                  k.contains("still-image-time") {
-                return real
-            }
-        }
-        return nil
     }
 
     // MARK: - 小工具
