@@ -125,9 +125,9 @@ def dump(fn, show_meta=True):
             ilst = walk(d, mt_, ['ilst'])
             if ilst:
                 P = payload(ilst)
-                print('   ilst size', ilst[1])
-                for t, o, s, h in bparse(d, P, ilst[1]+ilst[1] if False else ilst[1]+o):
-                    print(f'     ilst child={t} size={s} raw={d[o:o+s][:40].hex()}')
+                print('   ilst size', ilst[2])
+                for t, o, s, h in bparse(d, P, ilst[1] + ilst[2]):
+                    print(f'     ilst item size={s} raw={d[o:o+s][:48].hex()}')
             for t, o, s, h in children(d, mt_):
                 print('   meta child:', t, s, d[o+8:o+min(s,24)].hex())
     return None

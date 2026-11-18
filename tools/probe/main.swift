@@ -531,17 +531,18 @@ if FileManager.default.fileExists(atPath: sampleURL.path) {
         guard let rr = r, rr.canAdd(out) else { continue }
         rr.add(out)
         guard rr.startReading() else { continue }
-        if let sb = out.copyNextSampleBuffer(),
-           let groups = try? sb.metadataGroups(),
-           let g = groups.first {
-            for it in g.items {
-                print("ITEM key=\(it.key ?? "nil") keySpace=\(it.keySpace?.rawValue ?? "nil") dataType=\(it.dataType ?? "nil") value=\(String(describing: it.value))")
-                if let gf = try? g.copyFormatDescription() {
-                    print("  group.formatDesc extensions=\(String(describing: CMFormatDescriptionGetExtensions(gf)))")
-                }
+        // 直接读 CMSampleBuffer 的原始字节比走 AVMetadataItem 更稳，
+        // 也不用 metadataGroups()（那个 API 在 macOS 26 SDK 里已经没有了）
+        if let sb = out.copyNextSampleBuffer(), let bb = CMSampleBufferGetDataBuffer(sb) {
+            var len = 0
+            var ptr: UnsafeMutablePointer<Int8>?
+            CMBlockBufferGetDataPointer(bb, atOffset: 0, lengthAtOffsetOut: nil,
+                                        totalLengthOut: &len, dataPointerOut: &ptr)
+            if let p = ptr, len > 0 {
+                print("SIT-SAMPLE bytes=\(len) hex=\(Data(bytes: p, count: min(len, 120)).map { String(format: "%02x", $0) }.joined())")
             }
-            break
         }
+        break
     }
 }
 
