@@ -33,7 +33,7 @@ struct MadeLive {
     /// 验证备注：系统错误详情 / 封面搜索过程
     var verifyNote = ""
     /// 最终采用的封面时刻（秒）
-    var coverSeconds = 0
+    var coverSeconds: Double = 0
 }
 
 func fourCCString(_ code: FourCharCode) -> String {

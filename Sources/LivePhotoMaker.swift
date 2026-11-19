@@ -166,7 +166,7 @@ enum LivePhotoMaker {
                 if !usedClean {
                     progress("封面搜索：准备干净副本…")
                     do {
-                        try Passthrough.convert(source: source, outputURL: cleanURL,
+                        _ = try Passthrough.convert(source: source, outputURL: cleanURL,
                                                 maxSeconds: maxSeconds, keepAudio: keepAudio,
                                                 metaFormat: nil, identifier: identifier,
                                                 sampleURL: nil, date: stampDate,
