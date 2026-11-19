@@ -166,11 +166,10 @@ enum Passthrough {
         }
         let makeItem = qItem("com.apple.quicktime.make", "Apple")
         let modelItem = qItem("com.apple.quicktime.model", "iPhone")
-        #if canImport(UIKit)
-        let osVer = UIDevice.current.systemVersion
-        #else
-        let osVer = "17.0"     // macOS CI probe 用固定值
-        #endif
+        // 用 Foundation 的 ProcessInfo（iOS/macOS 都有），避免依赖 UIKit，
+        // 这样 macOS CI 的 probe 也能编译这个文件。
+        let osv = ProcessInfo.processInfo.operatingSystemVersion
+        let osVer = "\(osv.majorVersion).\(osv.minorVersion)\(osv.patchVersion > 0 ? ".\(osv.patchVersion)" : "")"
         let softItem = qItem("com.apple.quicktime.software", osVer)
 
         writer.metadata = [idItem, makeItem, modelItem, softItem, dateItem]
