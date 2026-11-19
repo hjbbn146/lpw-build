@@ -133,7 +133,7 @@ enum MetaTrakPorter {
         let stillPts: Int = {
             guard let ov = stillSecondsOverride, ov.isFinite, ov > 0 else { return stillPtsBase }
             let target = Int((ov * 600.0).rounded())
-            return alignToFrame(target, in: vMoovData, vTrak, timescale: vTimescale,
+            return alignToFrame(target, vMoovData, vTrak, timescale: vTimescale,
                                 fallback: stillPtsBase, durationTicks: durTicks)
         }()
         // elst 的 segment_duration 用 **movie timescale**，不是 media timescale
@@ -445,7 +445,8 @@ enum MetaTrakPorter {
                              fallback: Int,
                              durationTicks: Int) -> Int {
         guard let stts = BoxKit.find(d, trak, ["mdia", "minf", "stbl", "stts"]) else {
-            return min(max(0, target600), max(0, durationTicks - 1))
+            let g = min(max(0, target600), max(0, durationTicks - 1))
+            return g > 0 ? g : fallback
         }
         let p = BoxKit.payload(stts)
         let n = Int(BoxKit.u32(d, p + 4))

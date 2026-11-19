@@ -158,7 +158,6 @@ enum LivePhotoMaker {
             var usedClean = false
             var chosenVideo = videoURL
             var chosenPhoto = photoURL
-            var chosenCover = defaultCover
 
             var ci = 0
             for cand in LivePhotoMaker.coverCandidates(preferred: defaultCover, duration: res.usedSeconds) {
@@ -202,7 +201,6 @@ enum LivePhotoMaker {
                         verified = true
                         chosenVideo = cVideo
                         chosenPhoto = cPhoto
-                        chosenCover = rep.stillSeconds
                         finalCover = rep.stillSeconds
                         note = String(format: "封面自动搜索通过（%.2fs）", rep.stillSeconds)
                         break
@@ -228,7 +226,6 @@ enum LivePhotoMaker {
                 verified = vf.accepted
                 if !vf.accepted { note = "复验未通过：\(vf.errorText)" }
             }
-            _ = chosenCover
         }
 
         Diag.log("生成完成：\(info.width)×\(info.height) \(info.codec) \(res.frames) 帧，标识 \(identifier)"
