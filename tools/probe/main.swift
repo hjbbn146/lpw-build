@@ -288,7 +288,8 @@ print("=== 直通实测（视频 + 音频交错）===")
 
 
 /// 生成一段纯色渐变测试视频（H.264，30fps）
-func makeSolidVideo(_ url: URL, w: Int, h: Int, seconds: Double) -> String? {
+func makeSolidVideo(_ url: URL, w: Int, h: Int, seconds: Double,
+                    transform: CGAffineTransform = .identity) -> String? {
     try? FileManager.default.removeItem(at: url)
     guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return "创建 writer 失败" }
     let vSettings: [String: Any] = [
@@ -298,6 +299,8 @@ func makeSolidVideo(_ url: URL, w: Int, h: Int, seconds: Double) -> String? {
     ]
     let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: vSettings)
     vIn.expectsMediaDataInRealTime = false
+    // v4.9：允许生成「横屏编码 + 旋转矩阵」的源，用于验证 VideoRotator 旋转路径
+    vIn.transform = transform
     let adaptor = AVAssetWriterInputPixelBufferAdaptor(
         assetWriterInput: vIn,
         sourcePixelBufferAttributes: [
@@ -627,6 +630,47 @@ do {
     print("PORTER convert FAIL: \(error.localizedDescription)")
 }
 print(bundledOK ? "PORTER PASS" : "PORTER 未通过")
+
+// ---- v4.9 方向路径：源视频「横屏编码 + 90° 旋转」必须被转成「物理竖屏 + 单位矩阵」
+//
+// 这是「壁纸永远灰」的真根因：真机三个可用样本全是编码即竖屏、tkhd 单位矩阵；
+// 我们之前把旋转矩阵写进 tkhd，系统按横屏算，静帧却是竖图 → 比例不符。
+print("")
+print("=== v4.9 方向路径验证 ===")
+var orientOK = false
+let rotSrc = cDir.appendingPathComponent("rot_src.mov")
+let rotOut = cDir.appendingPathComponent("rot_out.mov")
+// 960×540 横屏编码 + 90° 旋转 = 显示 540×960 竖屏（模拟 iPhone 竖屏拍摄）
+if let e = makeSolidVideo(rotSrc, w: 960, h: 540, seconds: 2.0,
+                          transform: CGAffineTransform(rotationAngle: .pi / 2)) {
+    print("ROT 造源失败: \(e)")
+} else {
+    let srcAsset = AVURLAsset(url: rotSrc)
+    let srcTf = srcAsset.tracks(withMediaType: .video).first?.preferredTransform ?? .identity
+    print("ROT 源矩阵 a=\(String(format: "%.2f", srcTf.a)) b=\(String(format: "%.2f", srcTf.b)) c=\(String(format: "%.2f", srcTf.c)) d=\(String(format: "%.2f", srcTf.d))")
+    do {
+        _ = try Passthrough.convert(source: rotSrc, outputURL: rotOut, maxSeconds: 2.0,
+                                    keepAudio: false, metaFormat: nil,
+                                    identifier: "ROT-TEST", sampleURL: sampleURL,
+                                    progress: { _ in })
+        let oa = AVURLAsset(url: rotOut)
+        if let t = oa.tracks(withMediaType: .video).first {
+            let tf = t.preferredTransform
+            let isIdentity = abs(tf.a - 1) < 0.01 && abs(tf.b) < 0.01
+                && abs(tf.c) < 0.01 && abs(tf.d - 1) < 0.01
+            let n = t.naturalSize
+            let portrait = n.height > n.width
+            orientOK = isIdentity && portrait
+            print("ROT 产物 matrix单位=\(isIdentity) 编码=\(Int(n.width))×\(Int(n.height)) 竖屏=\(portrait)")
+            print("ROT 断言: 单位矩阵=\(isIdentity) 物理竖屏=\(portrait) → \(orientOK ? "PASS" : "FAIL")")
+        } else {
+            print("ROT 产物没有视频轨")
+        }
+    } catch {
+        print("ROT convert FAIL: \(error.localizedDescription)")
+    }
+}
+print(orientOK ? "ROT PASS" : "ROT 未通过")
 
 
 // ---- E. 从样本 still-image-time 轨读出真实的 AVMetadataItem 参数

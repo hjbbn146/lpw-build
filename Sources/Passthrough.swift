@@ -50,7 +50,35 @@ enum Passthrough {
         var result = Result()
         result.identifier = identifier
 
-        let asset = AVURLAsset(url: source,
+        // ---- 方向预检（v4.9 核心修复）
+        //
+        // iOS 实况照片的配对视频必须是「物理竖屏编码 + 单位矩阵」。
+        // iPhone 竖屏拍的普通视频是「横屏编码 + 90° 矩阵」，直接重封装会让系统
+        // 按横屏认（tkhd 1920×1080），而静帧是竖图 → 比例不符 → 壁纸永远灰。
+        // 所以这里先判方向：需要旋转就先物理旋转（唯一必须重编码的一步），
+        // 旋转后的视频已是竖屏单位矩阵，后续仍然零重编码直通。
+        var effectiveSource = source
+        var rotatedTemp: URL?
+        do {
+            let probe = AVURLAsset(url: source,
+                                   options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+            if let pt = probe.tracks(withMediaType: .video).first, VideoRotator.needsRotation(pt) {
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("rot_\(UUID().uuidString).mov")
+                try VideoRotator.rotate(source: source, outputURL: tmp,
+                                        maxSeconds: maxSeconds, progress: progress)
+                effectiveSource = tmp
+                rotatedTemp = tmp
+                Diag.log("方向：已物理旋转为竖屏（否则 Live Photo 不被接受）")
+            } else {
+                Diag.log("方向：源视频已是物理方向（单位矩阵），保持零重编码直通")
+            }
+        }
+        defer {
+            if let r = rotatedTemp { try? FileManager.default.removeItem(at: r) }
+        }
+
+        let asset = AVURLAsset(url: effectiveSource,
                                options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         guard let vTrack = asset.tracks(withMediaType: .video).first else {
             throw MakeError.msg("源文件里没有视频轨")

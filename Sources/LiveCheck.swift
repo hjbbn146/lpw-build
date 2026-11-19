@@ -25,6 +25,11 @@ struct LiveCheck {
     /// 视频显示尺寸与静帧尺寸是否一致（不一致壁纸引擎会拒绝）
     var displaySize: CGSize = .zero
     var stillSize: CGSize = .zero
+    /// v4.9：视频轨是否带旋转矩阵。
+    /// iOS 实况要求「物理竖屏 + 单位矩阵」；带旋转矩阵的产物系统会按横屏认，
+    /// 与竖屏静帧比例不符 → 壁纸必灰。之前这里用 preferredTransform 算显示尺寸，
+    /// 把 1080×1920 算成"匹配"，掩盖了真正的问题。
+    var hasRotationMatrix = false
     /// v4.8：still-image-time 的 stsd 格式描述与 sample 内容是否自洽。
     /// 之前 probe 只验 sample、漏了 stsd，导致「全 PASS 却不可用」。
     var sitStsdConsistent = false
@@ -47,6 +52,9 @@ struct LiveCheck {
             m.append("still-image-time 格式描述与内容不自洽（\(sitStsdNote)）")
         }
         if hasBadOrientationTrack { m.append("多出 video-orientation 轨（会导致方向转两次）") }
+        if hasRotationMatrix {
+            m.append("视频带旋转矩阵（Live Photo 要求物理竖屏、单位矩阵；否则系统按横屏算，与竖屏静帧不符）")
+        }
         if !sizeMatches {
             m.append(String(format: "画面比例不符：视频 %d×%d / 静帧 %d×%d",
                             Int(displaySize.width), Int(displaySize.height),
@@ -95,10 +103,14 @@ struct LiveCheck {
                 let sub = CMFormatDescriptionGetMediaSubType(fd)
                 r.isHEVC = (sub == 0x68766331) || (sub == 0x68657631)   // hvc1 / hev1
             }
-            // 显示尺寸 = 编码尺寸应用 preferredTransform（竖屏视频编码是横的）
-            let n = t.naturalSize
-            let disp = n.applying(t.preferredTransform)
-            r.displaySize = CGSize(width: abs(disp.width), height: abs(disp.height))
+            // v4.9：实况要求「物理方向 + 单位矩阵」。
+            // 不能用 preferredTransform 算显示尺寸——那会把 1920×1080+90° 算成 1080×1920，
+            // 看起来"匹配"，但系统是按 tkhd 实际尺寸判的，于是壁纸永远灰。
+            let tf = t.preferredTransform
+            let identity = abs(tf.a - 1) < 0.01 && abs(tf.b) < 0.01
+                && abs(tf.c) < 0.01 && abs(tf.d - 1) < 0.01
+            r.hasRotationMatrix = !identity
+            r.displaySize = t.naturalSize     // 单位矩阵时，编码尺寸即显示尺寸
         }
         return r
     }

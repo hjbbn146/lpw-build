@@ -41,6 +41,7 @@ jobs:
             Sources/HeicExifInjector.swift \
             Sources/BoxKit.swift \
             Sources/MetaTrakPorter.swift \
+            Sources/VideoRotator.swift \
             Sources/Passthrough.swift \
             tools/probe/main.swift > probe.txt 2>&1
           if [ -x ./probe_macos ]; then
@@ -77,6 +78,7 @@ jobs:
             Sources/CrashCatcher.swift \
             Sources/BoxKit.swift \
             Sources/MetaTrakPorter.swift \
+            Sources/VideoRotator.swift \
             Sources/Passthrough.swift \
             Sources/LiveCheck.swift \
             Sources/LiveValidator.swift \
