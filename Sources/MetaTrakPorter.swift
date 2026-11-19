@@ -149,6 +149,18 @@ enum MetaTrakPorter {
                  + String(format: "%.3f", Double(stillPts) / 600.0)
                  + "s （movie ts=\(movieTs) → elst \(stillInMovieTs)）")
 
+        // elst 的 segment_duration 单位是 **movie timescale**，供体与目标的
+        // mvhd timescale 可能不同（p0066 是 44100，产物是 600），必须换算。
+        let donorMovieTs: Int = {
+            guard let smv = BoxKit.children(sData, sMoov).first(where: { $0.type == "mvhd" }) else { return 600 }
+            let p = BoxKit.payload(smv)
+            let ver = sData[p]
+            let off = p + (ver == 0 ? 12 : 20)
+            guard off + 4 <= sData.count else { return 600 }
+            let v = Int(BoxKit.u32(sData, off))
+            return v > 0 ? v : 600
+        }()
+
         // ---- 收集元数据 sample
         let md2Base = prefixEnd + 8          // mdat2 头 8 字节
         var mdat2: [UInt8] = []
@@ -305,40 +317,55 @@ enum MetaTrakPorter {
                 }
             }
 
-            // 3) elst 时长对齐视频：empty edit 超出视频长度会让静帧时刻落空
+            // 3) elst 时长对齐视频
+            //
+            // elst 的 segment_duration 单位是 **movie timescale**。供体 p0066 的
+            // mvhd timescale=44100，产物通常是 600，直接照搬数值会放大 73 倍：
+            //   SIT empty edit 22050 → 在 600 时基下变成 36.75 秒（远超 3 秒视频）→ 静帧落空。
+            //   LPI empty edit 2205  → 变成 3.675 秒，把传感器轨整段推到视频之后。
+            // 所以这里统一先按 donorMovieTs → movieTs 等比换算，再夹进视频时长。
             if let el = BoxKit.find(sData, tk, ["edts", "elst"]) {
                 let p = BoxKit.payload(el) - base
                 let ver = t[p]
                 let cnt = Int(BoxKit.u32(t, p + 4))
                 let esz = ver == 0 ? 12 : 20
+                let videoMovieTicks = durTicks * movieTs / 600
+
+                func scaled(_ seg: Int) -> Int {
+                    guard donorMovieTs > 0, movieTs > 0 else { return seg }
+                    return Int((Double(seg) * Double(movieTs) / Double(donorMovieTs)).rounded())
+                }
+
                 for i in 0..<cnt {
                     let q = p + 8 + i * esz
                     if ver == 0 {
                         let seg = Int(BoxKit.u32(t, q))
                         let mt = Int(BoxKit.i32(t, q + 4))
-                        if mt == -1 {
-                            // empty edit 就是静帧时刻本身。照抄样本的 920 而不按目标
-                            // 视频重算，静帧会落在两帧之间 → 壁纸引擎找不到静帧 → 按钮变灰。
-                            let v = (key == "still-image-time" && stillInMovieTs > 0)
-                                ? stillInMovieTs
-                                : max(1, min(seg, durTicks * movieTs / 600 / 2))
-                            BoxKit.put32(&t, q, UInt32(v))
-                        } else if seg > 10 {
-                            BoxKit.put32(&t, q, UInt32(min(seg, durTicks * movieTs / 600)))
+                        let v: Int
+                        if key == "still-image-time" && stillInMovieTs > 0 {
+                            // 静帧时刻：唯一的权威来源，固定按 0.5 秒写入
+                            v = mt == -1 ? stillInMovieTs : max(1, min(scaled(seg), videoMovieTicks))
+                        } else if mt == -1 {
+                            // LPI 的 empty edit 按比例缩放，并保证不越过视频末尾
+                            v = max(1, min(scaled(seg), max(1, videoMovieTicks / 2)))
+                        } else {
+                            v = max(1, min(scaled(seg), videoMovieTicks))
                         }
+                        BoxKit.put32(&t, q, UInt32(v))
                     } else {
                         let seg = Int(BoxKit.u64(t, q))
                         // v1 的 media_time 是有符号 64 位，-1 表示 empty edit。
                         // 直接 Int(u64) 遇到 0xFFFF... 会溢出崩溃，必须走 bitPattern。
                         let mt = Int(Int64(bitPattern: BoxKit.u64(t, q + 8)))
-                        if mt == -1 {
-                            let v = (key == "still-image-time" && stillInMovieTs > 0)
-                                ? stillInMovieTs
-                                : max(1, min(seg, durTicks * movieTs / 600 / 2))
-                            BoxKit.put64(&t, q, UInt64(v))
-                        } else if seg > 10 {
-                            BoxKit.put64(&t, q, UInt64(min(seg, durTicks * movieTs / 600)))
+                        let v: Int
+                        if key == "still-image-time" && stillInMovieTs > 0 {
+                            v = mt == -1 ? stillInMovieTs : max(1, min(scaled(seg), videoMovieTicks))
+                        } else if mt == -1 {
+                            v = max(1, min(scaled(seg), max(1, videoMovieTicks / 2)))
+                        } else {
+                            v = max(1, min(scaled(seg), videoMovieTicks))
                         }
+                        BoxKit.put64(&t, q, UInt64(v))
                     }
                 }
             }

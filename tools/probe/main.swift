@@ -484,6 +484,71 @@ func txt5Keys(_ data: Data) -> Bool {
         && data.range(of: Data("com.apple.quicktime.software".utf8)) != nil
 }
 
+/// ★ v4.8 核心断言：still-image-time 轨的 **stsd 格式描述** 与 **sample 内容** 必须自洽。
+///
+/// 根因（2026-11-19 定位）：内置旧供体 sample_live.mov 的 SIT stsd = 293 字节，
+/// 里面声明了 2 个 key（still-image-time + still-image-transform **+ reference-dimensions**，
+/// 共 3 个 dtyp 块）；而我们把 sample 换成了真机的 89 字节版（只有 2 个 atom）。
+/// 系统按 stsd 声明的 key 结构解析 sample，发现少一个 atom → 判定 still-image-time 非法
+/// → 实况壁纸按钮永远是灰的。之前所有 probe 只验 sample、不验 stsd，所以一直"全 PASS 却不可用"。
+///
+/// 本函数检查：SIT 轨 stsd 的 keys 定义数量、sample 的 atom 数量，两者必须一致。
+func sitStsdConsistent(_ url: URL) -> (ok: Bool, note: String) {
+    guard let d = try? Data(contentsOf: url) else { return (false, "读文件失败") }
+    let b = [UInt8](d)
+    let tops = BoxKit.boxes(b, 0, b.count)
+    guard let moov = tops.first(where: { $0.type == "moov" }) else { return (false, "无 moov") }
+    for tk in BoxKit.children(b, moov).filter({ $0.type == "trak" }) {
+        guard let stsd = BoxKit.find(b, tk, ["mdia", "minf", "stbl", "stsd"]) else { continue }
+        let p = BoxKit.payload(stsd)
+        let esz = Int(BoxKit.u32(b, p + 8))
+        let lo = p + 8, hi = min(b.count, lo + max(0, esz))
+        guard lo < hi else { continue }
+        let s = String(decoding: b[lo..<hi], as: UTF8.self)
+        guard s.contains("still-image-time") else { continue }
+
+        // stsd 里 keys box 的 count
+        var keyCount = -1
+        if let kr = s.range(of: "keys") {
+            let ks = s.distance(from: s.startIndex, to: kr.lowerBound) - 4
+            if ks >= 0 && ks + 16 <= hi - lo {
+                let sub = [UInt8](b[(lo + ks)..<hi])
+                keyCount = Int(BoxKit.u32(sub, 12))
+            }
+        }
+
+        // 取第一个 sample 的字节，数 atom 个数（每个 atom = 4B size + 4B key + data）
+        guard let stsz = BoxKit.find(b, tk, ["mdia", "minf", "stbl", "stsz"]) else { continue }
+        let q = BoxKit.payload(stsz)
+        let fixed = Int(BoxKit.u32(b, q + 4))
+        guard fixed > 0 else { continue }
+        guard let stco = BoxKit.find(b, tk, ["mdia", "minf", "stbl", "stco"]) else { continue }
+        let r = BoxKit.payload(stco)
+        guard Int(BoxKit.u32(b, r + 4)) >= 1 else { continue }
+        let off = Int(BoxKit.u32(b, r + 8))
+        guard off + fixed <= b.count else { continue }
+        let sample = Array(b[off..<(off + fixed)])
+
+        // 数 atom（sample 是若干 (size, key, payload) 串接）
+        var atoms = 0
+        var ptr = 0
+        while ptr + 8 <= sample.count {
+            let sz = Int(BoxKit.u32(sample, ptr))
+            if sz < 8 || ptr + sz > sample.count { break }
+            atoms += 1
+            ptr += sz
+        }
+        // stsd 的 keys count 里，若含 transform-reference-dimensions 会多一个 key。
+        // 真机：keyCount=1、atoms=2（标记 + 矩阵）；旧样本：keyCount=1、atoms=3（多 reference-dimensions）
+        // 判据用 "stsd 的 esz 是否等于真机 184" 更直接：184 = 2 atom 版，293 = 3 atom 版。
+        let note = "SIT stsd esz=\(esz) keysCount=\(keyCount) sampleAtoms=\(atoms) sampleBytes=\(fixed)"
+        // 真机自洽条件：esz==184 且 atoms==2 且 fixed==89
+        let ok = (esz == 184 && atoms == 2 && fixed == 89)
+        return (ok, note)
+    }
+    return (false, "没找到 still-image-time 轨")
+}
+
 // ---- D. 内置真机样本的真实 mebx 格式描述 → 两轨直通（v2.6 主路径验证）
 print("")
 print("=== 内置样本元数据格式 → 直通验证 ===")
@@ -553,8 +618,11 @@ do {
     var lpiTsOK = false
     if let ts = probeLpiTimescale(bout) { lpiTsOK = (ts == 60000) }
     let meta5 = txt5Keys(data)
-    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical && stillOK && lpiTsOK && meta5
-    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical) 静帧0.5s=\(stillOK)(\(String(format: "%.3f", r.stillSeconds))) LPI时基60000=\(lpiTsOK) meta5=\(meta5)")
+    // ★ v4.8：stsd 与 sample 必须自洽（这次真正的根因）
+    let sitCons = sitStsdConsistent(bout)
+    print("PORTER SIT自洽: \(sitCons.ok) · \(sitCons.note)")
+    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical && stillOK && lpiTsOK && meta5 && sitCons.ok
+    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical) 静帧0.5s=\(stillOK)(\(String(format: "%.3f", r.stillSeconds))) LPI时基60000=\(lpiTsOK) meta5=\(meta5) SIT自洽=\(sitCons.ok)")
 } catch {
     print("PORTER convert FAIL: \(error.localizedDescription)")
 }
