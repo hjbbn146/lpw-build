@@ -111,10 +111,30 @@ enum MetaTrakPorter {
 
         // 静帧时刻：必须精确落在视频正中间那一帧上
         // （元数据轨的时基固定 600，视频轨不是 600 时要换算）
-        let midRaw = midPointPts(vMoovData, vTrak)
-        let midPts = (vTimescale == 600 || vTimescale == 0)
-            ? midRaw.pts : midRaw.pts * 600 / vTimescale
-        Diag.log("移植：视频 \(midRaw.frames) 帧 · 静帧取第 \(midRaw.frames/2 + 1) 帧 PTS=\(midPts)")
+        // 静帧时刻：**固定 0.5 秒**，不是视频中间。
+        //
+        // 三个「确定能设壁纸」的样本全部落在 0.5 秒：
+        //   p0066  真机自拍     视频 1.000s → SIT elst empty 22050 @mvhd 44100 = 0.5s
+        //   p0061  第三方 App   视频 0.983s → 22050 @44100 = 0.5s
+        //   p0065  第三方 App   视频 0.767s → 300    @600    = 0.5s
+        // 而内置样本/模板是「视频中间」（3.0s → 1.533s）—— 中间值在短视频上会离 0.5 秒很远，
+        // 与上面三个可用样本都不一致。老板「拖动视频轨换封面就好」正是因为
+        // Photos 默认把封面落在靠前的位置。
+        let stillRaw = stillPointPts(vMoovData, vTrak, timescale: vTimescale)
+        let stillPts = (vTimescale == 600 || vTimescale == 0)
+            ? stillRaw.pts : stillRaw.pts * 600 / vTimescale
+        // elst 的 segment_duration 用 **movie timescale**，不是 media timescale
+        let movieTs: Int = {
+            let mv = vMoovData[mvhd.off + 8]
+            let off = mvhd.off + 8 + (mv == 0 ? 12 : 20)
+            guard off + 4 <= vMoovData.count else { return 600 }
+            let v = Int(BoxKit.u32(vMoovData, off))
+            return v > 0 ? v : 600
+        }()
+        let stillInMovieTs = stillPts * movieTs / 600
+        Diag.log("移植：视频 \(stillRaw.frames) 帧 · 静帧落在 \(stillPts)/600 秒 = "
+                 + String(format: "%.3f", Double(stillPts) / 600.0)
+                 + "s （movie ts=\(movieTs) → elst \(stillInMovieTs)）")
 
         // ---- 收集元数据 sample
         let md2Base = prefixEnd + 8          // mdat2 头 8 字节
@@ -227,12 +247,12 @@ enum MetaTrakPorter {
                         if mt == -1 {
                             // empty edit 就是静帧时刻本身。照抄样本的 920 而不按目标
                             // 视频重算，静帧会落在两帧之间 → 壁纸引擎找不到静帧 → 按钮变灰。
-                            let v = (key == "still-image-time" && midPts > 0)
-                                ? midPts
-                                : max(1, min(seg, durTicks / 2))
+                            let v = (key == "still-image-time" && stillInMovieTs > 0)
+                                ? stillInMovieTs
+                                : max(1, min(seg, durTicks * movieTs / 600 / 2))
                             BoxKit.put32(&t, q, UInt32(v))
                         } else if seg > 10 {
-                            BoxKit.put32(&t, q, UInt32(min(seg, durTicks)))
+                            BoxKit.put32(&t, q, UInt32(min(seg, durTicks * movieTs / 600)))
                         }
                     } else {
                         let seg = Int(BoxKit.u64(t, q))
@@ -240,12 +260,12 @@ enum MetaTrakPorter {
                         // 直接 Int(u64) 遇到 0xFFFF... 会溢出崩溃，必须走 bitPattern。
                         let mt = Int(Int64(bitPattern: BoxKit.u64(t, q + 8)))
                         if mt == -1 {
-                            let v = (key == "still-image-time" && midPts > 0)
-                                ? midPts
-                                : max(1, min(seg, durTicks / 2))
+                            let v = (key == "still-image-time" && stillInMovieTs > 0)
+                                ? stillInMovieTs
+                                : max(1, min(seg, durTicks * movieTs / 600 / 2))
                             BoxKit.put64(&t, q, UInt64(v))
                         } else if seg > 10 {
-                            BoxKit.put64(&t, q, UInt64(min(seg, durTicks)))
+                            BoxKit.put64(&t, q, UInt64(min(seg, durTicks * movieTs / 600)))
                         }
                     }
                 }
@@ -313,7 +333,7 @@ enum MetaTrakPorter {
         rep.tracks = ["vide"] + donorOrder
         rep.sampleBytes = mdat2.count
         rep.outputBytes = prefixEnd + mdat2Box.count + newMoov.count
-        rep.stillSeconds = Double(midPts) / 600.0
+        rep.stillSeconds = Double(stillPts) / 600.0
         return rep
     }
 
@@ -353,6 +373,47 @@ enum MetaTrakPorter {
     /// v3.1 直接照抄了样本的 920，遇到 24fps/60fps 的视频静帧就掉进两帧之间，
     /// 壁纸引擎取不到封面帧，实况按钮于是变灰。
     /// 老板真机验证：进照片编辑重选一次封面就能用 —— 那正是 Photos 重算了这个时刻。
+    /// 静帧时刻：**固定 0.5 秒**，并对齐到不晚于该时刻的最后一帧起点。
+    ///
+    /// 依据（三个「确定能设壁纸」的样本一致）：
+    ///   p0066  真机自拍    1.000s → 0.5s
+    ///   p0061  第三方 App  0.983s → 0.5s
+    ///   p0065  第三方 App  0.767s → 0.5s
+    /// 返回值的单位是**视频轨的 timescale**。视频短于 0.6 秒时退到中间。
+    static func stillPointPts(_ d: [UInt8],
+                              _ trak: BoxKit.Box,
+                              timescale: Int) -> (pts: Int, frames: Int) {
+        guard let stts = BoxKit.find(d, trak, ["mdia", "minf", "stbl", "stts"]) else { return (0, 0) }
+        let p = BoxKit.payload(stts)
+        let n = Int(BoxKit.u32(d, p + 4))
+        guard n > 0 else { return (0, 0) }
+        var entries: [(cnt: Int, delta: Int)] = []
+        for i in 0..<n {
+            entries.append((Int(BoxKit.u32(d, p + 8 + i * 8)),
+                            Int(BoxKit.u32(d, p + 12 + i * 8))))
+        }
+        let total = entries.reduce(0) { $0 + $1.cnt }
+        guard total > 0 else { return (0, 0) }
+        let ts = timescale > 0 ? timescale : 600
+        let totalTicks = entries.reduce(0) { $0 + $1.cnt * $1.delta }
+        let durationSec = Double(totalTicks) / Double(ts)
+        let targetSec = durationSec < 0.6 ? durationSec / 2 : 0.5
+        let target = Int(targetSec * Double(ts))
+
+        // 找不晚于 target 的最后一帧起点
+        var pts = 0
+        var best = 0
+        for e in entries {
+            if e.delta <= 0 { pts += e.cnt * max(0, e.delta); continue }
+            if pts > target { break }
+            let k = min(e.cnt - 1, (target - pts) / e.delta)
+            best = pts + k * e.delta
+            pts += e.cnt * e.delta
+        }
+        return (best, total)
+    }
+
+    /// 保留旧实现（历史版本用「总帧数/2+1」的中间帧），当前不再调用。
     static func midPointPts(_ d: [UInt8], _ trak: BoxKit.Box) -> (pts: Int, frames: Int) {
         guard let stts = BoxKit.find(d, trak, ["mdia", "minf", "stbl", "stts"]) else { return (0, 0) }
         let p = BoxKit.payload(stts)

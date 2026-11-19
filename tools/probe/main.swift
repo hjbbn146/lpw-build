@@ -518,8 +518,10 @@ do {
     // 照搬样本会带上透视分量 → 封面被判不合法。
     let canonicalSIT = Data(MetaTrakPorter.canonicalStillSample)
     let sitCanonical = data.range(of: canonicalSIT) != nil
-    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical
-    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical)")
+    // 静帧时刻必须是 0.5 秒（真机与两个第三方可用产物一致）
+    let stillOK = abs(r.stillSeconds - 0.5) < 0.06
+    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical && stillOK
+    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical) 静帧0.5s=\(stillOK)(\(String(format: "%.3f", r.stillSeconds)))")
 } catch {
     print("PORTER convert FAIL: \(error.localizedDescription)")
 }
