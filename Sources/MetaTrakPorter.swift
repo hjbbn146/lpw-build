@@ -155,6 +155,30 @@ enum MetaTrakPorter {
                 }
             }
 
+            // 1.2) live-photo-info：采样点循环补齐到 60Hz 覆盖整段视频
+            //
+            // 样本只有 74 个点（stsz fixed=144），真机是 60Hz、点数≈秒数×60。
+            // 每个点是 144 字节传感器采样，循环复制即可（数据内容本身壁纸引擎不逐点校验，
+            // 关键是点数/时基/时长自洽）。补齐后 stsz count / stsc / stco 都要同步重建。
+            var lpiTargetSamples = 0
+            if key == "live-photo-info" {
+                let secs = Double(durTicks) / 600.0
+                lpiTargetSamples = max(57, Int(round(secs * 60)))
+                if !data.isEmpty {
+                    let sampleBytes = 144
+                    let have = data.count / sampleBytes
+                    var extended = data
+                    var i = have
+                    while i < lpiTargetSamples {
+                        extended.append(contentsOf: data[(i % have) * sampleBytes..<((i % have) + 1) * sampleBytes])
+                        i += 1
+                    }
+                    data = extended
+                    Diag.log("移植：LPI 采样点 \(have) → \(lpiTargetSamples)"
+                             + "（60Hz × \(String(format: "%.2f", secs))s）")
+                }
+            }
+
             // 1.5) still-image-time 的 sample 内容必须重建，不能照搬样本
             //
             // 真机基准（iPhone15,4 / iOS 27.2 自己拍的实况）实测，这条 sample 是 89 字节、2 个 atom：
@@ -189,13 +213,24 @@ enum MetaTrakPorter {
             }
 
             // 2) stco / co64 指向 mdat2
+            // LPI 已重建为单 chunk（stsc 只有一条），stco 必须同步成 entry_count=1、
+            // 只写第一个偏移；否则多出来的旧条目指向旧 mdat，AVFoundation 读 LPI 会错位。
             if let stbl = BoxKit.find(sData, tk, ["mdia", "minf", "stbl"]) {
                 if coKind == "stco", let b = BoxKit.child(sData, stbl, "stco") {
                     let p = BoxKit.payload(b) - base
-                    for (i, o) in newOffs.enumerated() { BoxKit.put32(&t, p + 8 + i * 4, UInt32(o)) }
+                    if key == "live-photo-info", let first = newOffs.first {
+                        BoxKit.put32(&t, p + 4, 1)
+                        BoxKit.put32(&t, p + 8, UInt32(first))
+                    } else {
+                        for (i, o) in newOffs.enumerated() { BoxKit.put32(&t, p + 8 + i * 4, UInt32(o)) }
+                    }
                 } else if let b = BoxKit.child(sData, stbl, "co64") {
                     let p = BoxKit.payload(b) - base
-                    for (i, o) in newOffs.enumerated() { BoxKit.put64(&t, p + 8 + i * 8, UInt64(o)) }
+                    if key == "live-photo-info", let first = newOffs.first {
+                        BoxKit.put64(&t, p + 8, UInt64(first))
+                    } else {
+                        for (i, o) in newOffs.enumerated() { BoxKit.put64(&t, p + 8 + i * 8, UInt64(o)) }
+                    }
                 }
             }
 
@@ -214,22 +249,46 @@ enum MetaTrakPorter {
                 Diag.log("移植：still-image-time sample \(old) → \(newSize) 字节（换成单位矩阵版）")
             }
 
-            // 2.5) live-photo-info 的 mdhd duration 钳到视频长度
+            // 2.5) live-photo-info 轨按真机基准完整重建
             //
-            // 样本这条轨是 3.0 秒；视频被截到 2.9 秒后它反而比画面轨长。
-            // 声明一条比视频还长的元数据轨，在真机上会被判成不一致。
-            if key == "live-photo-info",
-               let mdhd = BoxKit.find(sData, tk, ["mdia", "mdhd"]) {
-                let p = BoxKit.payload(mdhd) - base
-                let ver = t[p]
-                if ver == 0 {
-                    let ts = Int(BoxKit.u32(t, p + 12))
-                    let cur = Int(BoxKit.u32(t, p + 16))
-                    let limit = (ts == 600) ? durTicks : (ts > 0 ? durTicks * ts / 600 : cur)
-                    if limit > 0 && cur > limit {
-                        BoxKit.put32(&t, p + 16, UInt32(limit))
-                        Diag.log("移植：live-photo-info 时长 \(cur) → \(limit)（钳到视频长度）")
+            // 真机自拍（p0066）与两个第三方可用产物（p0061/p0065）的 LPI 轨全是：
+            //   mdhd timescale=60000，stts (n,1000) 即 60Hz，duration=n×1000
+            //   stsz fixed=144 count=n，stsc [(1,n,1)]（单 chunk），stco 单点
+            // 内置样本却是 600 时基、8 段 stts、6 段 stsc —— 三个能用样本没一个这样。
+            // 这是「换封面后 Photos 重写」的关键动作之一，壁纸引擎很可能强依赖 60000。
+            if key == "live-photo-info" {
+                let LPI_TS = 60_000
+                let n = lpiTargetSamples
+                if let mdhd = BoxKit.find(sData, tk, ["mdia", "mdhd"]) {
+                    let p = BoxKit.payload(mdhd) - base
+                    let ver = t[p]
+                    if ver == 0 {
+                        let oldTs = Int(BoxKit.u32(t, p + 12))
+                        BoxKit.put32(&t, p + 12, UInt32(LPI_TS))
+                        BoxKit.put32(&t, p + 16, UInt32(n * 1000))
+                        Diag.log("移植：LPI 时基 \(oldTs) → \(LPI_TS) · duration=\(n * 1000)（\(n) sample 60Hz）")
                     }
+                }
+                // stts → 单一 (n, 1000)
+                if let stts = BoxKit.find(sData, tk, ["mdia", "minf", "stbl", "stts"]) {
+                    let p = BoxKit.payload(stts) - base
+                    BoxKit.put32(&t, p + 4, 1)
+                    BoxKit.put32(&t, p + 8, UInt32(n))
+                    BoxKit.put32(&t, p + 12, 1000)
+                }
+                // stsz → fixed=144, count=n
+                if let stsz = BoxKit.find(sData, tk, ["mdia", "minf", "stbl", "stsz"]) {
+                    let p = BoxKit.payload(stsz) - base
+                    BoxKit.put32(&t, p + 4, 144)
+                    BoxKit.put32(&t, p + 8, UInt32(n))
+                }
+                // stsc → 单一 (1, n, 1)：所有采样点在一个 chunk 里
+                if let stsc = BoxKit.find(sData, tk, ["mdia", "minf", "stbl", "stsc"]) {
+                    let p = BoxKit.payload(stsc) - base
+                    BoxKit.put32(&t, p + 4, 1)
+                    BoxKit.put32(&t, p + 8, 1)
+                    BoxKit.put32(&t, p + 12, UInt32(n))
+                    BoxKit.put32(&t, p + 16, 1)
                 }
             }
 

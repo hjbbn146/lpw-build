@@ -455,6 +455,35 @@ if let alt = altFmt, passTestOK {
     print("THREE-TEST 跳过（拿不到可用的元数据格式）")
 }
 
+// ---- 产物结构探针（v4.6）：LPI 时基 + meta 五项 ----
+/// 读 MOV 里 live-photo-info 轨的 mdhd timescale；找不到返回 nil。
+func probeLpiTimescale(_ url: URL) -> UInt32? {
+    guard let d = try? Data(contentsOf: url) else { return nil }
+    let b = [UInt8](d)
+    let tops = BoxKit.boxes(b, 0, b.count)
+    guard let moov = tops.first(where: { $0.type == "moov" }) else { return nil }
+    for tk in BoxKit.children(b, moov).filter({ $0.type == "trak" }) {
+        guard let stsd = BoxKit.find(b, tk, ["mdia", "minf", "stbl", "stsd"]) else { continue }
+        let p = BoxKit.payload(stsd)
+        let esz = Int(BoxKit.u32(b, p + 8))
+        let lo = p + 8, hi = min(b.count, lo + max(0, esz))
+        guard lo < hi else { continue }
+        let s = String(decoding: b[lo..<hi], as: UTF8.self)
+        guard s.contains("live-photo-info") else { continue }
+        guard let mdhd = BoxKit.find(b, tk, ["mdia", "mdhd"]) else { return nil }
+        let q = BoxKit.payload(mdhd)
+        return BoxKit.u32(b, q + 12)      // version 0: timescale 在 payload+12
+    }
+    return nil
+}
+
+/// meta keys 是否含 make/model/software 三项（配 identifier/creationdate 共五项）
+func txt5Keys(_ data: Data) -> Bool {
+    return data.range(of: Data("com.apple.quicktime.make".utf8)) != nil
+        && data.range(of: Data("com.apple.quicktime.model".utf8)) != nil
+        && data.range(of: Data("com.apple.quicktime.software".utf8)) != nil
+}
+
 // ---- D. 内置真机样本的真实 mebx 格式描述 → 两轨直通（v2.6 主路径验证）
 print("")
 print("=== 内置样本元数据格式 → 直通验证 ===")
@@ -520,8 +549,12 @@ do {
     let sitCanonical = data.range(of: canonicalSIT) != nil
     // 静帧时刻必须是 0.5 秒（真机与两个第三方可用产物一致）
     let stillOK = abs(r.stillSeconds - 0.5) < 0.06
-    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical && stillOK
-    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical) 静帧0.5s=\(stillOK)(\(String(format: "%.3f", r.stillSeconds)))")
+    // v4.6 起：LPI 轨时基必须是 60000，meta 必须有 make/model/software 五项
+    var lpiTsOK = false
+    if let ts = probeLpiTimescale(bout) { lpiTsOK = (ts == 60000) }
+    let meta5 = txt5Keys(data)
+    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical && stillOK && lpiTsOK && meta5
+    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical) 静帧0.5s=\(stillOK)(\(String(format: "%.3f", r.stillSeconds))) LPI时基60000=\(lpiTsOK) meta5=\(meta5)")
 } catch {
     print("PORTER convert FAIL: \(error.localizedDescription)")
 }

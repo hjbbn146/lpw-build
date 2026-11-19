@@ -152,7 +152,29 @@ enum Passthrough {
         dateItem.key = "com.apple.quicktime.creationdate" as NSString
         dateItem.value = isoNow(date) as NSString
 
-        writer.metadata = [idItem, dateItem]
+        // 真机自拍的实况照片 moov/meta 有 5 项（iPhone15,4 / iOS 27.2 实测）：
+        //   content.identifier / make / model / software / creationdate
+        // 我们原来只写 identifier + creationdate 两项。缺的这三项不参与配对，
+        // 但壁纸引擎很可能拿它们判断「这是不是一台 iPhone 拍的正规实况」。
+        // 值照抄真机：make=Apple / model=iPhone / software=系统版本。
+        func qItem(_ key: String, _ value: String) -> AVMutableMetadataItem {
+            let m = AVMutableMetadataItem()
+            m.keySpace = .quickTimeMetadata
+            m.key = key as NSString
+            m.value = value as NSString
+            return m
+        }
+        let makeItem = qItem("com.apple.quicktime.make", "Apple")
+        let modelItem = qItem("com.apple.quicktime.model", "iPhone")
+        #if canImport(UIKit)
+        let osVer = UIDevice.current.systemVersion
+        #else
+        let osVer = "17.0"     // macOS CI probe 用固定值
+        #endif
+        let softItem = qItem("com.apple.quicktime.software", osVer)
+
+        writer.metadata = [idItem, makeItem, modelItem, softItem, dateItem]
+        Diag.log("顶层元数据 5 项：identifier / make=Apple / model=iPhone / software=\(osVer) / creationdate")
 
         // ---- 开跑
         Diag.log("阶段: writer 已建好（video=\(writer.inputs.contains { $0.mediaType == .video })"
