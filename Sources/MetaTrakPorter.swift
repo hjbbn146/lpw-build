@@ -64,8 +64,13 @@ enum MetaTrakPorter {
     // MARK: - 入口
 
     /// 原地把 videoURL 重写成带完整实况元数据轨的版本（成功后原文件被覆盖）
+    ///
+    /// - Parameter stillSecondsOverride: 运行期指定封面时刻（秒）。nil 时沿用默认 0.5s 逻辑。
+    ///   用于封面自动搜索：换一个封面时刻重新移植，直到系统验证通过。
     @discardableResult
-    static func port(videoURL: URL, sampleURL: URL) throws -> Report {
+    static func port(videoURL: URL,
+                     sampleURL: URL,
+                     stillSecondsOverride: Double? = nil) throws -> Report {
         let sData = [UInt8](try Data(contentsOf: sampleURL))
         let sTop = BoxKit.boxes(sData, 0, sData.count)
         guard let sMoov = sTop.first(where: { $0.type == "moov" }) else {
@@ -121,8 +126,16 @@ enum MetaTrakPorter {
         // 与上面三个可用样本都不一致。老板「拖动视频轨换封面就好」正是因为
         // Photos 默认把封面落在靠前的位置。
         let stillRaw = stillPointPts(vMoovData, vTrak, timescale: vTimescale)
-        let stillPts = (vTimescale == 600 || vTimescale == 0)
+        let stillPtsBase = (vTimescale == 600 || vTimescale == 0)
             ? stillRaw.pts : stillRaw.pts * 600 / vTimescale
+        // 封面搜索：调用方指定时刻时，换算到 600 时基并夹在 [0, durTicks) 内。
+        // 系统只接受精确落在真实帧起点上的时刻，所以再对到不晚于目标的最后一帧。
+        let stillPts: Int = {
+            guard let ov = stillSecondsOverride, ov.isFinite, ov > 0 else { return stillPtsBase }
+            let target = Int((ov * 600.0).rounded())
+            return alignToFrame(target, in: vMoovData, vTrak, timescale: vTimescale,
+                                fallback: stillPtsBase, durationTicks: durTicks)
+        }()
         // elst 的 segment_duration 用 **movie timescale**，不是 media timescale
         let movieTs: Int = {
             let mv = vMoovData[mvhd.off + 8]
@@ -422,6 +435,37 @@ enum MetaTrakPorter {
             return (Int(BoxKit.u32(d, p + 12)), Int(BoxKit.u32(d, p + 16)))
         }
         return (Int(BoxKit.u32(d, p + 20)), Int(BoxKit.u64(d, p + 24)))
+    }
+
+    /// 把 600 时基的目标时刻对齐到「不晚于它的最后一帧起点」，并夹在时长内。
+    /// 封面搜索专用：系统对 still-image-time 的判据是必须落在真实帧边界上。
+    static func alignToFrame(_ target600: Int,
+                             _ d: [UInt8], _ trak: BoxKit.Box,
+                             timescale: Int,
+                             fallback: Int,
+                             durationTicks: Int) -> Int {
+        guard let stts = BoxKit.find(d, trak, ["mdia", "minf", "stbl", "stts"]) else {
+            return min(max(0, target600), max(0, durationTicks - 1))
+        }
+        let p = BoxKit.payload(stts)
+        let n = Int(BoxKit.u32(d, p + 4))
+        guard n > 0 else { return target600 }
+        let ts = timescale > 0 ? timescale : 600
+        // 目标从 600 时基换算回视频轨时基
+        let targetMedia = ts == 600 ? target600 : target600 * ts / 600
+        var pts = 0
+        var best = 0
+        for i in 0..<n {
+            let cnt = Int(BoxKit.u32(d, p + 8 + i * 8))
+            let delta = Int(BoxKit.u32(d, p + 12 + i * 8))
+            if delta <= 0 { continue }
+            if pts > targetMedia { break }
+            let k = min(cnt - 1, max(0, (targetMedia - pts) / delta))
+            best = pts + k * delta
+            pts += cnt * delta
+        }
+        let clampedMedia = min(best, max(0, durationTicks * ts / 600 - 1))
+        return ts == 600 ? clampedMedia : clampedMedia * 600 / ts
     }
 
     /// 静帧落在视频正中间那一帧的精确 PTS（600 时基）。

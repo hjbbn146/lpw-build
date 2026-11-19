@@ -79,6 +79,7 @@ jobs:
             Sources/MetaTrakPorter.swift \
             Sources/Passthrough.swift \
             Sources/LiveCheck.swift \
+            Sources/LiveValidator.swift \
             Sources/SelfTest.swift \
             Sources/MetaFormatProvider.swift \
             Sources/LivePhotoMaker.swift \

@@ -421,17 +421,26 @@ final class RootViewController: UIViewController {
 
                 DispatchQueue.main.async {
                     self.endBG()
-                    if chk.ok {
-                        self.setBusy(false, "完成 · 结构完整")
+                    let verifyLine = made.verifiedLive
+                        ? "✅ 系统验证通过 · 可直接设为锁屏实况壁纸"
+                        : "⚠️ 系统未验证通过：\(made.verifyNote)"
+                    if chk.ok && made.verifiedLive {
+                        self.setBusy(false, "完成 · 系统已验证")
                         self.resultLabel.text = String(format:
-                            "已生成：HEVC + 实况元数据轨齐全\n动态 %.2f MB · 静帧 %.2f MB · %d×%d\n\n按下方说明设为锁屏壁纸。",
-                            mb, photoMB, made.info.width, made.info.height)
+                            "%@\n已生成：HEVC + 实况元数据轨齐全\n动态 %.2f MB · 静帧 %.2f MB · %d×%d\n\n按下方说明设为锁屏壁纸。",
+                            verifyLine, mb, photoMB, made.info.width, made.info.height)
                         self.resultLabel.textColor = Theme.text
+                    } else if chk.ok {
+                        self.setBusy(false, "完成 · 待真机确认")
+                        self.resultLabel.text = String(format:
+                            "%@\n结构完整：HEVC + 实况元数据轨齐全\n动态 %.2f MB · 静帧 %.2f MB\n\n文件已存相册，请手动试着设为锁屏实况壁纸；若不行，点「复制日志」发给开发者。",
+                            verifyLine, mb, photoMB)
+                        self.resultLabel.textColor = Theme.warn
                     } else {
                         self.setBusy(false, "结构不完整")
                         self.resultLabel.text = String(format:
-                            "%@\n动态 %.2f MB · 静帧 %.2f MB\n相册里可能只显示成普通照片，把日志发给开发者",
-                            chk.summary, mb, photoMB)
+                            "%@\n%@\n动态 %.2f MB · 静帧 %.2f MB\n把日志发给开发者",
+                            verifyLine, chk.summary, mb, photoMB)
                         self.resultLabel.textColor = Theme.warn
                     }
                     if !live {

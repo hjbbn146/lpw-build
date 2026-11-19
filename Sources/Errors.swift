@@ -28,6 +28,12 @@ struct MadeLive {
     let photoURL: URL
     let identifier: String
     let info: VideoInfo
+    /// 系统 PHLivePhoto 验证是否通过（高置信可设为锁屏实况壁纸）
+    var verifiedLive = false
+    /// 验证备注：系统错误详情 / 封面搜索过程
+    var verifyNote = ""
+    /// 最终采用的封面时刻（秒）
+    var coverSeconds = 0
 }
 
 func fourCCString(_ code: FourCharCode) -> String {

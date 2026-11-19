@@ -113,54 +113,170 @@ enum LivePhotoMaker {
                                           progress: progress)
         }
 
-        // ---- 静帧
+        // ---- 静帧：从「产物视频」取，不从源视频取
         //
-        // 关键：静帧画面必须取 still-image-time 指向的同一时刻。
-        // 真机实况的封面图就是那条轨指到的那一帧；两者不一致时，
-        // 锁屏静态画面和长按播放的第一帧会跳变，壁纸引擎也更容易判成不可用。
+        // ★ 这是「手动换封面就能用」的根治点：
+        // 静帧必须和 still-image-time 轨指向的那一帧在同一条时间轴上。
+        // 从源视频取帧时，源与产物的 PTS 起点／transform 可能有微小错位，
+        // 系统验证就会发现「封面图和指定时刻的帧对不上」→ 壁纸按钮变灰。
+        // 从产物取则天然对齐：same file, same timeline。
         progress("提取静帧…")
-        let coverTime: CMTime
-        if res.stillSeconds > 0.03 {
-            coverTime = CMTime(seconds: res.stillSeconds, preferredTimescale: 600)
-            Diag.log(String(format: "静帧取 %.3fs（与 still-image-time 对齐）", res.stillSeconds))
-        } else {
-            coverTime = CMTime(value: 1, timescale: 30)
-            Diag.log("静帧取 0.033s（移植未给出静帧时刻，退回默认）")
-        }
-        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: source,
-                                                          options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]))
-        gen.appliesPreferredTrackTransform = true
-        gen.maximumSize = .zero
-        // 精确取帧：容差留大会取到相邻帧，画面就和 still-image-time 对不上了
-        gen.requestedTimeToleranceBefore = .zero
-        gen.requestedTimeToleranceAfter = .zero
-
-        var cg: CGImage?
-        autoreleasepool {
-            cg = try? gen.copyCGImage(at: coverTime, actualTime: nil)
-        }
-        // 关键帧不落在 1/30 秒附近时第一次可能取不到；放宽容差再试一次
-        if cg == nil {
-            gen.requestedTimeToleranceBefore = .positiveInfinity
-            gen.requestedTimeToleranceAfter = .positiveInfinity
-            autoreleasepool {
-                cg = try? gen.copyCGImage(at: coverTime, actualTime: nil)
-            }
-        }
-        guard let cg = cg else {
+        let defaultCover = res.stillSeconds > 0.03 ? res.stillSeconds : 0.5
+        guard let cg0 = LivePhotoMaker.stillFrame(from: videoURL, at: defaultCover) else {
             throw MakeError.msg("取帧失败：无法解码视频画面（可能是 HEVC 10bit/HDR 素材）")
         }
-        Diag.log("静帧已解码：\(cg.width)×\(cg.height) bpc=\(cg.bitsPerComponent) " + Mem.summary())
-
-        let photoURL = try StillWriter.write(cgImage: cg,
+        Diag.log("静帧已解码：\(cg0.width)×\(cg0.height) bpc=\(cg0.bitsPerComponent) " + Mem.summary())
+        let photoURL = try StillWriter.write(cgImage: cg0,
                                             to: dir,
                                             baseName: photoBase,
                                             identifier: identifier,
                                             dateString: exifDateString(stampDate))
-
         let info = MediaInspector.inspect(source) ?? VideoInfo()
-        Diag.log("生成完成：\(info.width)×\(info.height) \(info.codec) \(res.frames) 帧，标识 \(identifier)")
-        return MadeLive(videoURL: videoURL, photoURL: photoURL, identifier: identifier, info: info)
+
+        // ---- 系统验证 + 封面自动搜索
+        //
+        // 静态轨结构上一版已经全部对齐真机，但仍设不了壁纸 —— 差的唯一一环是
+        // 「让系统自己判定」。Apple 官方 PHLivePhoto.request(withResourceFileURLs:)
+        // 会加载并验证这对文件，失败返回 NSError。这里先验证默认封面；
+        // 若系统不认，就遍历若干候选时刻，逐个重移植 + 重取静帧 + 重验，
+        // 取第一个被系统认可的封面。全程后台自动完成，失败也不阻断导出。
+        var verified = false
+        var note = ""
+        var finalCover = defaultCover
+        progress("系统验证封面…")
+        let v0 = LiveValidator.validate(photoURL: photoURL, videoURL: videoURL)
+        Diag.log(String(format: "系统验证·默认封面 %.3fs：%@（%.1fs）",
+                        defaultCover, v0.accepted ? "通过" : "未通过 · \(v0.errorText)", v0.elapsed))
+        if v0.accepted {
+            verified = true
+            note = "系统验证通过"
+        } else {
+            // 默认封面没过：重新直通一份干净产物，逐个候选封面重移植验证。
+            // （不能在已移植的产物上二次 port，否则轨会重复叠加。）
+            note = "默认封面未通过：\(v0.errorText)"
+            let cleanURL = dir.appendingPathComponent("clean_\(stamp).mov")
+            var usedClean = false
+            var chosenVideo = videoURL
+            var chosenPhoto = photoURL
+            var chosenCover = defaultCover
+
+            var ci = 0
+            for cand in LivePhotoMaker.coverCandidates(preferred: defaultCover, duration: res.usedSeconds) {
+                // 默认封面刚试过，跳过与它几乎相同的候选
+                if abs(cand - defaultCover) < 0.08 { continue }
+                if !usedClean {
+                    progress("封面搜索：准备干净副本…")
+                    do {
+                        try Passthrough.convert(source: source, outputURL: cleanURL,
+                                                maxSeconds: maxSeconds, keepAudio: keepAudio,
+                                                metaFormat: nil, identifier: identifier,
+                                                sampleURL: nil, date: stampDate,
+                                                progress: { _ in })
+                        usedClean = true
+                    } catch {
+                        Diag.log("封面搜索：重新直通失败 \(error.localizedDescription)")
+                        break
+                    }
+                }
+                ci += 1
+                progress("封面搜索 \(ci)：\(String(format: "%.2f", cand))s…")
+                let cVideo = dir.appendingPathComponent("cand_\(stamp)_\(ci).mov")
+                let cPhotoBase = "\(photoBase)_c\(ci)"
+                do {
+                    try? FileManager.default.removeItem(at: cVideo)
+                    try FileManager.default.copyItem(at: cleanURL, to: cVideo)
+                    let rep = try MetaTrakPorter.port(videoURL: cVideo,
+                                                      sampleURL: sampleURL,
+                                                      stillSecondsOverride: cand)
+                    guard let cg = LivePhotoMaker.stillFrame(from: cVideo, at: rep.stillSeconds) else {
+                        Diag.log("封面搜索 \(ci)：取帧失败，跳过")
+                        continue
+                    }
+                    let cPhoto = try StillWriter.write(cgImage: cg, to: dir,
+                                                       baseName: cPhotoBase, identifier: identifier,
+                                                       dateString: exifDateString(stampDate))
+                    let vv = LiveValidator.validate(photoURL: cPhoto, videoURL: cVideo)
+                    Diag.log(String(format: "封面搜索 \(ci)·%.3fs：%@（%.1fs）",
+                                    rep.stillSeconds, vv.accepted ? "通过" : vv.errorText, vv.elapsed))
+                    if vv.accepted {
+                        verified = true
+                        chosenVideo = cVideo
+                        chosenPhoto = cPhoto
+                        chosenCover = rep.stillSeconds
+                        finalCover = rep.stillSeconds
+                        note = String(format: "封面自动搜索通过（%.2fs）", rep.stillSeconds)
+                        break
+                    } else {
+                        note = vv.errorText
+                    }
+                } catch {
+                    Diag.log("封面搜索 \(ci) 失败：\(error.localizedDescription)")
+                }
+            }
+            // 把选中的候选覆盖成最终产物路径（沿用调用方期待的文件名）
+            if chosenVideo != videoURL {
+                try? FileManager.default.removeItem(at: videoURL)
+                try? FileManager.default.copyItem(at: chosenVideo, to: videoURL)
+                try? FileManager.default.removeItem(at: photoURL)
+                try? FileManager.default.copyItem(at: chosenPhoto, to: photoURL)
+            }
+            // 搜索阶段的所有临时文件清掉，只留最终产物
+            LivePhotoMaker.cleanup(except: [videoURL, photoURL], in: dir, stamp: stamp)
+            // 用最终产物再确认一次，保证复制过程没破坏文件
+            if verified {
+                let vf = LiveValidator.validate(photoURL: photoURL, videoURL: videoURL)
+                verified = vf.accepted
+                if !vf.accepted { note = "复验未通过：\(vf.errorText)" }
+            }
+            _ = chosenCover
+        }
+
+        Diag.log("生成完成：\(info.width)×\(info.height) \(info.codec) \(res.frames) 帧，标识 \(identifier)"
+                 + " · 封面 \(String(format: "%.3f", finalCover))s · 系统验证\(verified ? "通过" : "未过")")
+        return MadeLive(videoURL: videoURL, photoURL: photoURL, identifier: identifier,
+                        info: info, verifiedLive: verified, verifyNote: note,
+                        coverSeconds: finalCover)
+    }
+
+    /// 从产物视频的指定时刻取一帧（显示方向）。先零容差精确取，取不到再放宽容差。
+    private static func stillFrame(from videoURL: URL, at seconds: Double) -> CGImage? {
+        let t = seconds > 0.03 ? CMTime(seconds: seconds, preferredTimescale: 600)
+                               : CMTime(value: 1, timescale: 30)
+        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: videoURL,
+            options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]))
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = .zero
+        gen.requestedTimeToleranceBefore = .zero
+        gen.requestedTimeToleranceAfter = .zero
+        var cg: CGImage?
+        autoreleasepool { cg = try? gen.copyCGImage(at: t, actualTime: nil) }
+        if cg == nil {
+            gen.requestedTimeToleranceBefore = .positiveInfinity
+            gen.requestedTimeToleranceAfter = .positiveInfinity
+            autoreleasepool { cg = try? gen.copyCGImage(at: t, actualTime: nil) }
+        }
+        return cg
+    }
+
+    /// 封面候选时刻（秒）：默认封面之外，覆盖靠前、正中、略靠后的合法帧。
+    /// 系统「换封面就能用」的经验区间集中在前半秒到 1.5 秒。
+    private static func coverCandidates(preferred: Double, duration: Double) -> [Double] {
+        let upper = max(0.2, duration - 0.1)
+        let raw = [0.5, 0.25, 0.75, 1.0, 0.15, 1.5, 0.35, 1.2, 0.6]
+        var out: [Double] = []
+        for v in raw where v <= upper {
+            if !out.contains(where: { abs($0 - v) < 0.06 }) { out.append(v) }
+        }
+        return out
+    }
+
+    /// 清掉封面搜索中间文件，只保留最终产物。
+    private static func cleanup(except keep: [URL], in dir: URL, stamp: String) {
+        let keepPaths = Set(keep.map { $0.lastPathComponent })
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        for n in names where n.contains(stamp) && !keepPaths.contains(n) {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(n))
+        }
     }
 
     // MARK: - 元数据格式描述
