@@ -162,7 +162,13 @@ enum MetaTrakPorter {
         }()
 
         // ---- 收集元数据 sample
-        let md2Base = prefixEnd + 8          // mdat2 头 8 字节
+        // 元数据 sample 的落盘基址。
+        // ★ v5.1：走「单 mdat」时数据直接接在原 mdat 末尾（prefixEnd），没有 mdat2 的 8 字节头；
+        // 走兜底「双 mdat」时才要 +8。这里必须先判路线，否则 stco 会整体错位 8 字节，
+        // 系统读到的 sample 全是错的（SIT 自洽会直接变 false）。
+        let willUseSingleMdat = vTop.first(where: { $0.type == "mdat" })
+            .map { $0.off + $0.size == prefixEnd } ?? false
+        let md2Base = prefixEnd + (willUseSingleMdat ? 0 : 8)
         var mdat2: [UInt8] = []
         var rebuilt: [String: [UInt8]] = [:]
 
