@@ -634,11 +634,15 @@ do {
     var lpiTsOK = false
     if let ts = probeLpiTimescale(bout) { lpiTsOK = (ts == 60000) }
     let meta5 = txt5Keys(data)
-    // ★ v4.8：stsd 与 sample 必须自洽（这次真正的根因）
+    // ★ v4.8：stsd 与 sample 必须自洽
     let sitCons = sitStsdConsistent(bout)
     print("PORTER SIT自洽: \(sitCons.ok) · \(sitCons.note)")
-    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical && stillOK && lpiTsOK && meta5 && sitCons.ok
-    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical) 静帧0.5s=\(stillOK)(\(String(format: "%.3f", r.stillSeconds))) LPI时基60000=\(lpiTsOK) meta5=\(meta5) SIT自洽=\(sitCons.ok)")
+    // ★ v5.1：必须单 mdat（真机三个可用样本全是单 mdat）
+    let mdatCount = BoxKit.boxes([UInt8](data), 0, data.count).filter { $0.type == "mdat" }.count
+    let singleMdat = (mdatCount == 1)
+    print("PORTER mdat数量=\(mdatCount) 单mdat=\(singleMdat)")
+    bundledOK = r.frames > 0 && sit && lpi && !ori && uuid && sitCanonical && stillOK && lpiTsOK && meta5 && sitCons.ok && singleMdat
+    print("PORTER 断言: frames>0=\(r.frames > 0) sit=\(sit) lpi=\(lpi) 无ori=\(!ori) uuid=\(uuid) 单位矩阵=\(sitCanonical) 静帧0.5s=\(stillOK)(\(String(format: "%.3f", r.stillSeconds))) LPI时基60000=\(lpiTsOK) meta5=\(meta5) SIT自洽=\(sitCons.ok) 单mdat=\(singleMdat)")
 } catch {
     print("PORTER convert FAIL: \(error.localizedDescription)")
 }

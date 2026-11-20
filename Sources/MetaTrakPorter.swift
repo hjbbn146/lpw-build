@@ -336,6 +336,7 @@ enum MetaTrakPorter {
                     return Int((Double(seg) * Double(movieTs) / Double(donorMovieTs)).rounded())
                 }
 
+                var emptyAcc = 0
                 for i in 0..<cnt {
                     let q = p + 8 + i * esz
                     if ver == 0 {
@@ -343,11 +344,14 @@ enum MetaTrakPorter {
                         let mt = Int(BoxKit.i32(t, q + 4))
                         let v: Int
                         if key == "still-image-time" && stillInMovieTs > 0 {
-                            // 静帧时刻：唯一的权威来源，固定按 0.5 秒写入
                             v = mt == -1 ? stillInMovieTs : max(1, min(scaled(seg), videoMovieTicks))
                         } else if mt == -1 {
-                            // LPI 的 empty edit 按比例缩放，并保证不越过视频末尾
                             v = max(1, min(scaled(seg), max(1, videoMovieTicks / 2)))
+                            emptyAcc += v
+                        } else if key == "live-photo-info" {
+                            // LPI 的数据段必须一直覆盖到视频末尾，否则传感器数据
+                            // 只到 1 秒就断了，系统认为这条轨无效。
+                            v = max(1, videoMovieTicks - emptyAcc)
                         } else {
                             v = max(1, min(scaled(seg), videoMovieTicks))
                         }
@@ -362,6 +366,9 @@ enum MetaTrakPorter {
                             v = mt == -1 ? stillInMovieTs : max(1, min(scaled(seg), videoMovieTicks))
                         } else if mt == -1 {
                             v = max(1, min(scaled(seg), max(1, videoMovieTicks / 2)))
+                            emptyAcc += v
+                        } else if key == "live-photo-info" {
+                            v = max(1, videoMovieTicks - emptyAcc)
                         } else {
                             v = max(1, min(scaled(seg), videoMovieTicks))
                         }
@@ -399,9 +406,13 @@ enum MetaTrakPorter {
             payload.append(contentsOf: vMoovData[m.off..<(m.off + m.size)])
         }
         let newMoov = BoxKit.make("moov", payload)
-        let mdat2Box = mdat2.isEmpty ? [] : BoxKit.make("mdat", mdat2)
 
-        // ---- 写新文件：原前半段原样抄过去 → mdat2 → 新 moov
+        // ---- 写新文件
+        //
+        // ★ v5.1：优先把元数据 sample **并进原 mdat**，保持「单 mdat」布局。
+        // 真机三个可用样本（p0066/p0061/p0065）全是单 mdat；旧版单独造 mdat2，
+        // 结构上与可用样本不一致，是「有时能用有时不能用」的可疑来源之一。
+        // 只有原 mdat 不在 prefix 末尾（后面还夹了别的 box）时才退回 mdat2 方案。
         let tmpURL = videoURL.deletingLastPathComponent()
             .appendingPathComponent(videoURL.lastPathComponent + ".ported")
         try? FileManager.default.removeItem(at: tmpURL)
@@ -412,17 +423,51 @@ enum MetaTrakPorter {
         let rh = try FileHandle(forReadingFrom: videoURL)
         defer { try? wh.close(); try? rh.close() }
 
-        var remain = prefixEnd
-        rh.seek(toFileOffset: 0)
-        while remain > 0 {
-            let n = min(remain, 4 << 20)
-            let chunk = rh.readData(ofLength: n)
-            if chunk.isEmpty { break }
-            wh.write(chunk)
-            remain -= chunk.count
+        func copyRange(_ from: Int, _ to: Int) throws {
+            guard to > from else { return }
+            rh.seek(toFileOffset: UInt64(from))
+            var remain = to - from
+            while remain > 0 {
+                let n = min(remain, 4 << 20)
+                let chunk = rh.readData(ofLength: n)
+                if chunk.isEmpty { break }
+                wh.write(chunk)
+                remain -= chunk.count
+            }
         }
-        if !mdat2Box.isEmpty { wh.write(Data(mdat2Box)) }
-        wh.write(Data(newMoov))
+
+        var outBytes = 0
+        if let vMdat = vTop.first(where: { $0.type == "mdat" }),
+           vMdat.off + vMdat.size == prefixEnd, !mdat2.isEmpty {
+            // 单 mdat 路径
+            let newMdatSize = vMdat.size + mdat2.count
+            try copyRange(0, vMdat.off)
+
+            rh.seek(toFileOffset: UInt64(vMdat.off))
+            var hdr = [UInt8](rh.readData(ofLength: vMdat.hdr))
+            if vMdat.hdr >= 16 {
+                var v = UInt64(newMdatSize)
+                for i in 0..<8 { hdr[8 + i] = UInt8((v >> UInt64(8 * (7 - i))) & 0xFF) }
+            } else {
+                let v = UInt32(newMdatSize)
+                hdr[0] = UInt8((v >> 24) & 0xFF); hdr[1] = UInt8((v >> 16) & 0xFF)
+                hdr[2] = UInt8((v >> 8) & 0xFF); hdr[3] = UInt8(v & 0xFF)
+            }
+            wh.write(Data(hdr))
+            try copyRange(vMdat.off + vMdat.hdr, vMdat.off + vMdat.size)
+            wh.write(Data(mdat2))
+            wh.write(Data(newMoov))
+            outBytes = vMdat.off + newMdatSize + newMoov.count
+            Diag.log("移植：单 mdat 布局（\(vMdat.size)B → \(newMdatSize)B）")
+        } else {
+            // 兜底：原 mdat 不在末尾，单独造第二个 mdat
+            try copyRange(0, prefixEnd)
+            let mdat2Box = mdat2.isEmpty ? [] : BoxKit.make("mdat", mdat2)
+            if !mdat2Box.isEmpty { wh.write(Data(mdat2Box)) }
+            wh.write(Data(newMoov))
+            outBytes = prefixEnd + mdat2Box.count + newMoov.count
+            Diag.log("移植：mdat 不在末尾，退回双 mdat 布局")
+        }
         try wh.close()
         try rh.close()
 
@@ -431,7 +476,7 @@ enum MetaTrakPorter {
         var rep = Report()
         rep.tracks = ["vide"] + donorOrder
         rep.sampleBytes = mdat2.count
-        rep.outputBytes = prefixEnd + mdat2Box.count + newMoov.count
+        rep.outputBytes = outBytes
         rep.stillSeconds = Double(stillPts) / 600.0
         return rep
     }
