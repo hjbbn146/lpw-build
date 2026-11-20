@@ -32,7 +32,7 @@ final class RootViewController: UIViewController {
     private let seg = UISegmentedControl(items: ["3 秒", "2 秒", "1 秒"])
     private let audioSwitch = UISwitch()
 
-    private let genButton = Ctl.filledButton("生成实况壁纸", height: 50)
+    private let genButton = Ctl.filledButton("扫描全片封面并生成", height: 50)
 
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let statusLabel = Ctl.label("", size: 13, color: Theme.sub)
@@ -311,6 +311,9 @@ final class RootViewController: UIViewController {
             "设置 → 墙纸 → 添加新墙纸 → 照片 → 实况照片 → 选中它 → 左下角「实况」点亮 → 设定锁定屏幕",
             size: 12.5, color: Theme.faint))
         s.addArrangedSubview(Ctl.label(
+            "「扫描全片封面并生成」会一次产出多张（封面时刻不同），全部存进相册。逐张试，把能用的那张序号告诉我，即可定位正确的封面规则。",
+            size: 12.5, color: Theme.faint))
+        s.addArrangedSubview(Ctl.label(
             "亮屏时播一次；低电量模式、减弱动态效果会关掉动效；主屏幕始终静止。",
             size: 12.5, color: Theme.faint))
         return s
@@ -380,9 +383,6 @@ final class RootViewController: UIViewController {
             statusLabel.textColor = Theme.warn
             return
         }
-        // 真机实况视频的时长是**正好 3.000 秒**（1800 ticks @600）。
-        // 传 3.0 时最后一帧的时间戳常常刚好越过 1800，导出成了 3.02~3.04 秒，
-        // 比系统认可的上限多出一点点。这里留一帧余量，保证严格小于标称值。
         let maxSeconds: Double
         switch seg.selectedSegmentIndex {
         case 1: maxSeconds = 1.9
@@ -391,7 +391,7 @@ final class RootViewController: UIViewController {
         }
         let audio = audioSwitch.isOn
 
-        resultLabel.text = "处理中…"
+        resultLabel.text = "正在扫描全部封面…"
         resultLabel.textColor = Theme.sub
         statusLabel.textColor = Theme.sub
         setBusy(true, "准备中…")
@@ -400,52 +400,46 @@ final class RootViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             do {
-                let made = try LivePhotoMaker.make(source: src,
-                                                   maxSeconds: maxSeconds,
-                                                   keepAudio: audio) { s in
+                // v5.0：一次产出全片封面候选（每 0.15s 一张），全部写进相册，
+                // 让老板逐张试，用实测结果反推到底哪个封面时刻被系统接受。
+                let batch = try LivePhotoMaker.makeBatch(source: src,
+                                                         maxSeconds: maxSeconds,
+                                                         keepAudio: audio) { s in
                     DispatchQueue.main.async { self.statusLabel.text = s }
                 }
-                self.keepCopy(made)
+                guard !batch.isEmpty else {
+                    throw MakeError.msg("没有生成任何候选（取帧全部失败）")
+                }
 
-                DispatchQueue.main.async { self.statusLabel.text = "写入相册…" }
-                let lid = try PhotoSaver.savePair(photo: made.photoURL, video: made.videoURL)
-                let live = PhotoSaver.waitPhotoLive(localIdentifier: lid)
-
-                let chk = LiveCheck.verify(
-                    videoURL: made.videoURL,
-                    stillSize: CGSize(width: made.info.width, height: made.info.height))
-                Diag.log("产物结构自检：" + chk.summary)
-
-                let mb = self.fileMB(made.videoURL)
-                let photoMB = self.fileMB(made.photoURL)
+                var saved: [(cover: Double, ok: Bool)] = []
+                for (i, m) in batch.enumerated() {
+                    DispatchQueue.main.async {
+                        self.statusLabel.text = "写入相册 \(i + 1)/\(batch.count)…"
+                    }
+                    do {
+                        _ = try PhotoSaver.savePair(photo: m.photoURL, video: m.videoURL)
+                        saved.append((m.coverSeconds, true))
+                    } catch {
+                        Diag.log("候选写入失败（\(String(format: "%.2f", m.coverSeconds))s）：\(error.localizedDescription)")
+                        saved.append((m.coverSeconds, false))
+                    }
+                }
+                let okCount = saved.filter { $0.ok }.count
+                let covers = saved.map { $0.cover }.sorted()   // 从小到大的时刻
+                // 相册里最新的一张 = 最后写入的 = 时刻最大的那张
+                let listText = covers.reversed().map { String(format: "%.2f", $0) }.joined(separator: " / ")
+                Diag.log("批量写入完成：\(okCount)/\(batch.count) 张，封面时刻（相册从新到旧）= \(listText)")
 
                 DispatchQueue.main.async {
                     self.endBG()
-                    let verifyLine = made.verifiedLive
-                        ? "✅ 系统验证通过 · 可直接设为锁屏实况壁纸"
-                        : "⚠️ 系统未验证通过：\(made.verifyNote)"
-                    if chk.ok && made.verifiedLive {
-                        self.setBusy(false, "完成 · 系统已验证")
-                        self.resultLabel.text = String(format:
-                            "%@\n已生成：HEVC + 实况元数据轨齐全\n动态 %.2f MB · 静帧 %.2f MB · %d×%d\n\n按下方说明设为锁屏壁纸。",
-                            verifyLine, mb, photoMB, made.info.width, made.info.height)
-                        self.resultLabel.textColor = Theme.text
-                    } else if chk.ok {
-                        self.setBusy(false, "完成 · 待真机确认")
-                        self.resultLabel.text = String(format:
-                            "%@\n结构完整：HEVC + 实况元数据轨齐全\n动态 %.2f MB · 静帧 %.2f MB\n\n文件已存相册，请手动试着设为锁屏实况壁纸；若不行，点「复制日志」发给开发者。",
-                            verifyLine, mb, photoMB)
-                        self.resultLabel.textColor = Theme.warn
-                    } else {
-                        self.setBusy(false, "结构不完整")
-                        self.resultLabel.text = String(format:
-                            "%@\n%@\n动态 %.2f MB · 静帧 %.2f MB\n把日志发给开发者",
-                            verifyLine, chk.summary, mb, photoMB)
-                        self.resultLabel.textColor = Theme.warn
-                    }
-                    if !live {
-                        Diag.log("注意：PhotoKit 没把资产标成实况（mediaSubtypes 无 photoLive）")
-                    }
+                    self.setBusy(false, "扫描完成 · \(okCount) 张")
+                    self.resultLabel.text = String(format:
+                        "已生成 %d 张候选，全部写入相册。\n\n"
+                        + "相册里**最新那张 = %.2fs**，图片标题/时间可对照；从最新往前、越往前封面越靠前。\n\n"
+                        + "依次是（从新到旧）：\n%@\n\n"
+                        + "请逐张设为「锁屏实况壁纸」，把**能用的那张排第几**告诉我，我就能定位到精确的封面规则。",
+                        okCount, covers.last ?? 0, listText)
+                    self.resultLabel.textColor = Theme.text
                 }
             } catch {
                 let msg = error.localizedDescription

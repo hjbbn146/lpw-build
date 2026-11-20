@@ -160,7 +160,12 @@ jobs:
           set -euo pipefail
           [ -f probe.txt ] || echo "probe.txt not produced" > probe.txt
           TAG="build-$(date +%Y%m%d-%H%M%S)"
-          gh release create "$TAG" LiveWallpaper.ipa probe.txt \
+          # v5.0：把产物与静帧一起上传，供本地逐 box 对比真机可用样本
+          ARTS="LiveWallpaper.ipa probe.txt"
+          for f in out_*.mov out_*.heic out_*.jpg; do
+            [ -f "$f" ] && ARTS="$ARTS $f"
+          done
+          gh release create "$TAG" $ARTS \
             --title "LiveWallpaper $TAG" \
             --notes "auto build from ${{ github.sha }}"
           echo "TAG=$TAG" >> $GITHUB_ENV

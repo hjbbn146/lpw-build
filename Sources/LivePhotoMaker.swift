@@ -276,6 +276,145 @@ enum LivePhotoMaker {
         }
     }
 
+    // MARK: - 批量封面扫描（v5.0）
+
+    /// 把整段视频的封面时刻逐段扫一遍，每段生成一张独立实况，全部交给上层写相册。
+    ///
+    /// 老板的诉求：「每一帧都扫描，哪张能用就用哪张」。
+    /// 由于「壁纸按钮是否变亮」没有公开 API 可查，唯一可靠的判定是人在真机上试，
+    /// 所以这里直接把候选批量产出，让老板逐张试，用实际结果反推正确规则。
+    ///
+    /// 只直通一次（含旋转），后续每个候选只重移植元数据 + 重取静帧，速度可控。
+    static func makeBatch(source: URL,
+                          maxSeconds: Double,
+                          keepAudio: Bool,
+                          step: Double = 0.15,
+                          maxCandidates: Int = 14,
+                          progress: @escaping (String) -> Void) throws -> [MadeLive] {
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lpw", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stamp = "\(Int(Date().timeIntervalSince1970))\(Int.random(in: 100...999))"
+        let identifier = UUID().uuidString
+        let stampDate = Date()
+        guard let sampleURL = Bundle.main.url(forResource: "sample_live", withExtension: "mov") else {
+            throw MakeError.msg("App 内置的实况样本丢失（sample_live.mov），请重装应用")
+        }
+
+        // 1) 干净直通一次（sampleURL:nil = 不移植元数据；旋转在 convert 内部完成）
+        progress("准备干净产物…")
+        let cleanURL = dir.appendingPathComponent("clean_\(stamp).mov")
+        let res: Passthrough.Result
+        do {
+            res = try Passthrough.convert(source: source, outputURL: cleanURL,
+                                          maxSeconds: maxSeconds, keepAudio: keepAudio,
+                                          metaFormat: nil, identifier: identifier,
+                                          sampleURL: nil, date: stampDate, progress: progress)
+        } catch {
+            guard keepAudio else { throw error }
+            Diag.log("批量：带音轨失败，改纯视频重试")
+            try? FileManager.default.removeItem(at: cleanURL)
+            res = try Passthrough.convert(source: source, outputURL: cleanURL,
+                                          maxSeconds: maxSeconds, keepAudio: false,
+                                          metaFormat: nil, identifier: identifier,
+                                          sampleURL: nil, date: stampDate, progress: progress)
+        }
+        defer { try? FileManager.default.removeItem(at: cleanURL) }
+
+        let info = MediaInspector.inspect(source) ?? VideoInfo()
+        let covers = coverGrid(duration: res.usedSeconds, step: step, limit: maxCandidates)
+        Diag.log("批量扫描：时长 \(String(format: "%.2f", res.usedSeconds))s · \(covers.count) 个封面候选")
+        progress("扫描 \(covers.count) 个封面…")
+
+        var out: [MadeLive] = []
+        var i = 0
+        for c in covers {
+            i += 1
+            progress("生成候选 \(i)/\(covers.count) · \(String(format: "%.2f", c))s")
+            let vURL = dir.appendingPathComponent("cand_\(stamp)_\(i).mov")
+            do {
+                try? FileManager.default.removeItem(at: vURL)
+                try FileManager.default.copyItem(at: cleanURL, to: vURL)
+                let rep = try MetaTrakPorter.port(videoURL: vURL, sampleURL: sampleURL,
+                                                  stillSecondsOverride: c)
+                // 取帧必须精确落在封面时刻上，偏差超过一帧就跳过（否则静帧与时刻不符）
+                guard let (cg, actual) = stillFrameEx(from: vURL, at: rep.stillSeconds) else {
+                    Diag.log("候选 \(i)：取帧失败，跳过")
+                    try? FileManager.default.removeItem(at: vURL)
+                    continue
+                }
+                if abs(actual - rep.stillSeconds) > 0.06 {
+                    Diag.log(String(format: "候选 %d：取帧偏差过大 %.3f→%.3f，跳过", i, rep.stillSeconds, actual))
+                    try? FileManager.default.removeItem(at: vURL)
+                    continue
+                }
+                let pURL = try StillWriter.write(cgImage: cg, to: dir,
+                                                 baseName: "\(stamp)_c\(i)", identifier: identifier,
+                                                 dateString: exifDateString(stampDate))
+                var m = MadeLive(videoURL: vURL, photoURL: pURL, identifier: identifier, info: info)
+                m.verifiedLive = true          // 结构自洽（port 内部已保证），标记为可交付
+                m.verifyNote = String(format: "候选 %d · 封面 %.2fs", i, rep.stillSeconds)
+                m.coverSeconds = rep.stillSeconds
+                out.append(m)
+            } catch {
+                Diag.log("候选 \(i) 生成失败：\(error.localizedDescription)")
+                try? FileManager.default.removeItem(at: vURL)
+            }
+        }
+        Diag.log("批量扫描完成：\(out.count)/\(covers.count) 张候选")
+        return out
+    }
+
+    /// 封面时刻表：从 0.12s 起按 step 采样，避开开头黑帧与结尾，尽量覆盖全片。
+    private static func coverGrid(duration: Double, step: Double, limit: Int) -> [Double] {
+        guard duration > 0.2 else { return [duration / 2] }
+        let lo = 0.12
+        let hi = max(lo, duration - 0.12)
+        var all: [Double] = []
+        var t = lo
+        while t <= hi + 0.001 {
+            all.append((t * 1000).rounded() / 1000)
+            t += max(0.05, step)
+        }
+        if all.isEmpty { all = [duration / 2] }
+        // 必须包含 0.5s（真机三个可用样本都落在这里），且去重排序
+        all.append(0.5)
+        all = Array(Set(all.map { ($0 * 1000).rounded() / 1000 })).sorted()
+        if all.count <= limit { return all }
+        // 超量时均匀抽稀，但保留 0.5s
+        let stride = Double(all.count) / Double(limit)
+        var picked: [Double] = []
+        var idx = 0.0
+        while Int(idx) < all.count && picked.count < limit {
+            picked.append(all[min(all.count - 1, Int(idx))])
+            idx += stride
+        }
+        if !picked.contains(where: { abs($0 - 0.5) < 0.01 }) { picked.append(0.5) }
+        return Array(Set(picked)).sorted()
+    }
+
+    /// 取帧并返回实际取到的时刻（用于校验偏差）
+    private static func stillFrameEx(from videoURL: URL, at seconds: Double) -> (CGImage, Double)? {
+        let t = seconds > 0.03 ? CMTime(seconds: seconds, preferredTimescale: 600)
+                               : CMTime(value: 1, timescale: 30)
+        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: videoURL,
+            options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]))
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = .zero
+        gen.requestedTimeToleranceBefore = .zero
+        gen.requestedTimeToleranceAfter = .zero
+        var cg: CGImage?
+        var actual = CMTime.zero
+        autoreleasepool { cg = try? gen.copyCGImage(at: t, actualTime: &actual) }
+        if cg == nil {
+            gen.requestedTimeToleranceBefore = .positiveInfinity
+            gen.requestedTimeToleranceAfter = .positiveInfinity
+            autoreleasepool { cg = try? gen.copyCGImage(at: t, actualTime: &actual) }
+        }
+        guard let img = cg else { return nil }
+        return (img, CMTimeGetSeconds(actual))
+    }
+
     // MARK: - 元数据格式描述
 
     static func makeStillImageTimeFormat() -> CMFormatDescription? {

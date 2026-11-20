@@ -43,6 +43,19 @@ if let img = makeImage(800, 800) {
         let size = (try? Data(contentsOf: u).count) ?? 0
         print("PROBE still \(ext): exists=\(exists) bytes=\(size) makerNoteBytesOK=\(has)")
     }
+    // ★ v5.0：走真实入口 write()，看最终到底产出 HEIC 还是 JPEG。
+    // 真机三个可用样本的静帧全是 HEIC；若这里回退成 jpg，就是「有时能用有时不能用」的随机源。
+    do {
+        let finalURL = try StillWriter.write(cgImage: img, to: probeDir,
+                                             baseName: "full_still", identifier: ident,
+                                             dateString: "2026:11:18 10:00:00")
+        let ext = finalURL.pathExtension.lowercased()
+        let has = StillWriter.containsMakerNote(at: finalURL, expecting: ident)
+        print("PROBE write() 最终格式=\(ext) makerNote=\(has) bytes=\((try? Data(contentsOf: finalURL).count) ?? 0)")
+        print("PROBE write() HEIC可用=\(ext == "heic" && has)")
+    } catch {
+        print("PROBE write() 失败: \(error.localizedDescription)")
+    }
 } else {
     print("PROBE fail: 无法渲染测试图")
 }
@@ -697,6 +710,23 @@ if FileManager.default.fileExists(atPath: sampleURL.path) {
         }
         break
     }
+}
+
+// ★ v5.0：把真实产物复制到工作目录，让 CI 上传，供本地与真机可用样本做 box 级对比。
+// 之前所有结论都建立在"读日志字段"上，没有一次把产物拿到手逐 box 摊开比。
+let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+for n in ["bundled_out.mov", "rot_out.mov", "rot_src.mov"] {
+    let src = cDir.appendingPathComponent(n)
+    let dst = cwd.appendingPathComponent("out_\(n)")
+    try? FileManager.default.removeItem(at: dst)
+    try? FileManager.default.copyItem(at: src, to: dst)
+}
+// 最终静帧也带一份（HEIC 还是 JPEG 会直接决定能不能用）
+for n in ["full_still.heic", "full_still.jpg"] {
+    let src = probeDir.appendingPathComponent(n)
+    let dst = cwd.appendingPathComponent("out_\(n)")
+    try? FileManager.default.removeItem(at: dst)
+    try? FileManager.default.copyItem(at: src, to: dst)
 }
 
 print(passTestOK ? "PASS-TEST PASS" : "PASS-TEST FAIL")
